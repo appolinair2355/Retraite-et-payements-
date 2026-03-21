@@ -1,0 +1,10 @@
+python-telegram-bot==21.10
+httpx
+aiohttp
+APScheduler
+cachetools
+aiolimiter
+google-genai
+telethon
+openai
+groq
