@@ -1,46 +1,36 @@
-═══════════════════════════════════════════════════════════════
-   ASSISNT PAYEMENT - Bot Telegram Gestionnaire d'Accès
-   Déploiement sur Render.com
-═══════════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════
+   ASSISNT PAYEMENT — Bot Telegram Gestionnaire d Acces
+   Deploiement Render.com | Port 10000
+═══════════════════════════════════════════════════════════
 
-ÉTAPES DE DÉPLOIEMENT :
-───────────────────────
-1. Créez un compte sur render.com
-2. "New" → "Web Service" → "Deploy from ZIP file"
-3. Uploader ce ZIP
-4. Configurer les Variables d'Environnement ci-dessous
+VARIABLES OBLIGATOIRES (Render → Environment) :
+  BOT_TOKEN   = Token de votre bot (depuis @BotFather)
+  PORT        = 10000
 
-VARIABLES D'ENVIRONNEMENT (Render → Environment) :
-────────────────────────────────────────────────────
-OBLIGATOIRES :
-  BOT_TOKEN           = Token de votre bot (depuis @BotFather)
-  ADMINS              = Votre ID Telegram (ex: 123456789)
-  PORT                = 10000
+VOTRE ID ADMIN (1190237801) EST DEJA INTEGRE DANS LE CODE.
+Vous etes reconnu admin des le premier demarrage sans
+avoir a configurer la variable ADMINS.
 
-CLÉS IA (au moins 1 fournisseur) :
-  GEMINI_API_KEYS     = clé1,clé2,clé3   (Google AI Studio)
-  OPENAI_API_KEYS     = sk-...,sk-...     (platform.openai.com)
-  GROQ_API_KEYS       = gsk_...,gsk_...  (console.groq.com)
-  DEEPSEEK_API_KEYS   = sk-...,sk-...    (platform.deepseek.com)
-  OCR_SPACE_API_KEY   = K...             (ocr.space - optionnel)
+Pour ajouter d autres admins : utilisez /addadmin dans le bot.
 
-TELETHON (optionnel, pour scan membres complet) :
-  TELETHON_API_ID     = votre API ID     (my.telegram.org)
-  TELETHON_API_HASH   = votre API Hash
-  TELETHON_SESSION    = chaîne de session Telethon
+CLES IA (optionnelles, ajoutables via /setaikey apres demarrage) :
+  GEMINI_API_KEYS   = cle1,cle2   (Google AI Studio)
+  OPENAI_API_KEYS   = sk-...      (platform.openai.com)
+  GROQ_API_KEYS     = gsk_...     (console.groq.com)
+  DEEPSEEK_API_KEYS = sk-...      (platform.deepseek.com)
+  OCR_SPACE_API_KEY = K...        (ocr.space)
 
-FONCTIONNEMENT AU DÉMARRAGE :
-──────────────────────────────
-- Le bot démarre avec ZÉRO canal configuré
-- Ajoutez le bot comme ADMINISTRATEUR dans vos canaux Telegram
-- Il détecte automatiquement les canaux où il est admin
-- Il notifie les admins et commence à gérer les accès
+TELETHON (optionnel) :
+  TELETHON_API_ID   TELETHON_API_HASH   TELETHON_SESSION
 
-COMMANDES ADMIN PRINCIPALES :
-───────────────────────────────
-/start          - Menu principal
-/checkquota     - Voir les quotas IA restants
-/setaikey       - Ajouter une clé IA
-/listaikeys     - Lister les clés IA configurées
-/channels       - Voir les canaux gérés
+FONCTIONNEMENT :
+  Le bot demarre avec ZERO canal. Ajoutez-le comme
+  ADMINISTRATEUR dans vos canaux Telegram — il les
+  detecte automatiquement et commence a gerer les acces.
 
+COMMANDES PRINCIPALES :
+  /start        Menu principal
+  /checkquota   Quotas IA restants
+  /setaikey     Ajouter une cle IA
+  /listaikeys   Lister les cles IA
+  /addadmin     Ajouter un administrateur

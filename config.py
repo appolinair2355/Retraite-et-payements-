@@ -25,8 +25,14 @@ import os
 # ── Telegram ────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
+# ── Administrateurs ─────────────────────────────────────────────
+# IDs codés en dur : toujours reconnus comme admins, même sans var d'env
+DEFAULT_ADMINS = [1190237801]
+
+# On fusionne avec la variable d'env ADMINS (si définie)
 ADMINS_STR = os.getenv("ADMINS", "")
-ADMINS = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip().isdigit()]
+_env_admins = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip().isdigit()]
+ADMINS = list({*DEFAULT_ADMINS, *_env_admins})  # union sans doublons
 
 PORT = int(os.getenv("PORT", "10000"))
 
