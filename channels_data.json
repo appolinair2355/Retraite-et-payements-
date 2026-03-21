@@ -4,5 +4,6 @@
     "ai_enabled": true,
     "ai_keys": {},
     "bonus_used": [],
-    "extra_admins": []
+    "extra_admins": [],
+    "telethon_session": ""
 }

@@ -56,7 +56,9 @@ OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
 # Alias rétrocompat (utilisé dans main.py)
 GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
-# ── Telethon (optionnel) ────────────────────────────────────────
-TELETHON_API_ID   = int(os.getenv("TELETHON_API_ID", "0") or "0")
-TELETHON_API_HASH = os.getenv("TELETHON_API_HASH", "")
+# ── Telethon (optionnel — scan membres complet) ─────────────────
+# API ID et Hash codés en dur : /connect fonctionne immédiatement
+# sans avoir à configurer de variables d'environnement sur Render
+TELETHON_API_ID   = int(os.getenv("TELETHON_API_ID", "29177661") or "29177661")
+TELETHON_API_HASH = os.getenv("TELETHON_API_HASH", "a8639172fa8d35dbfd8ea46286d349ab")
 TELETHON_SESSION  = os.getenv("TELETHON_SESSION", "")

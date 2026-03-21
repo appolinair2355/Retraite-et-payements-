@@ -4236,14 +4236,21 @@ async def notify_admins_payment(context, user, cid: str, ch_name: str,
 # ═══════════════════════════════════════════════════════════════
 
 async def save_telethon_session(session_str: str, context, admin_id: int):
-    """Sauvegarde la session Telethon dans un fichier et notifie l'admin"""
-    # Sauvegarder dans un fichier local pour persistance
+    """Sauvegarde la session Telethon (channels_data.json + fichier) et notifie l'admin"""
+    # Sauvegarde dans channels_data.json — persiste sur Render.com
+    try:
+        data = load_data()
+        data["telethon_session"] = session_str
+        save_data(data)
+        logger.info("Session Telethon sauvegardée dans channels_data.json")
+    except Exception as e:
+        logger.error(f"Erreur sauvegarde session JSON: {e}")
+    # Sauvegarde aussi dans telethon_session.txt (fallback local)
     try:
         with open("telethon_session.txt", "w") as f:
             f.write(session_str)
-        logger.info("Session Telethon sauvegardée dans telethon_session.txt")
-    except Exception as e:
-        logger.error(f"Erreur sauvegarde session: {e}")
+    except Exception:
+        pass
 
     # Message partie 1: confirmation
     await context.bot.send_message(
@@ -4282,7 +4289,7 @@ async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TELETHON_API_ID or not TELETHON_API_HASH:
         await update.message.reply_text(
             "❌ **API Telethon non configurée.**\n\n"
-            "Ajoutez ces secrets dans Replit:\n"
+            "Configurez les variables d'environnement:\n"
             "• `TELETHON_API_ID` — votre API ID\n"
             "• `TELETHON_API_HASH` — votre API Hash\n\n"
             "Obtenez-les sur https://my.telegram.org",

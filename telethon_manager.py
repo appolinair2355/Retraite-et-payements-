@@ -21,10 +21,26 @@ API_ID = int(os.getenv("TELETHON_API_ID", str(_CFG_API_ID)))
 API_HASH = os.getenv("TELETHON_API_HASH", _CFG_API_HASH)
 
 def _load_session_string() -> str:
-    """Charge la session depuis l'env, config.py ou le fichier local"""
+    """
+    Charge la session Telethon depuis (par ordre de priorité) :
+      1. Variable d'environnement TELETHON_SESSION
+      2. config.py (TELETHON_SESSION)
+      3. channels_data.json  ← persistance sur Render.com
+      4. telethon_session.txt (fallback local)
+    """
     s = os.getenv("TELETHON_SESSION", "") or _CFG_SESSION
     if s:
         return s
+    # Lecture dans channels_data.json pour survivre aux redémarrages Render
+    try:
+        import json as _json
+        with open("channels_data.json", "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        s = data.get("telethon_session", "")
+        if s:
+            return s
+    except Exception:
+        pass
     try:
         with open("telethon_session.txt", "r") as f:
             return f.read().strip()
