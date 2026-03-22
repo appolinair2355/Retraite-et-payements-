@@ -533,9 +533,14 @@ async def web_handler(request):
     )
 
 
+async def health_handler(request):
+    return web.Response(text="OK", content_type="text/plain")
+
+
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', web_handler)
+    app.router.add_get('/health', health_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
@@ -706,8 +711,35 @@ async def ai_reply(user_id: int, user_message: str, bot=None) -> str:
     uid = str(user_id)
     history = conversation_history.get(uid, [])
 
+    # Injecter les modes d'emploi des canaux auxquels l'utilisateur appartient
+    data_ai = load_data()
+    mode_emploi_context = ""
+    for cid, ch in data_ai.get("channels", {}).items():
+        mode = ch.get("mode_emploi", "").strip()
+        if mode:
+            ch_name = ch.get("name", cid)
+            if uid in ch.get("members", {}):
+                mode_emploi_context += (
+                    f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"MODE D'EMPLOI DU CANAL : {ch_name}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{mode}\n"
+                )
+
+    full_system_prompt = SYSTEM_PROMPT
+    if mode_emploi_context:
+        full_system_prompt += (
+            "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "GUIDE D'UTILISATION DES CANAUX (fourni par l'administrateur)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Quand un utilisateur pose des questions sur le fonctionnement du bot ou du canal, "
+            "utilise UNIQUEMENT les informations ci-dessous. "
+            "Ne révèle jamais de stratégie interne, uniquement ce qui est écrit ici.\n"
+            f"{mode_emploi_context}"
+        )
+
     contents = [
-        {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
+        {"role": "user", "parts": [{"text": full_system_prompt}]},
         {"role": "model", "parts": [{"text": "Bien compris, je suis prêt à aider."}]}
     ]
     contents.extend(history)
@@ -882,6 +914,27 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await context.bot.send_message(new_id, "✅ *Vous avez été ajouté comme administrateur!*\n\nTapez /start pour voir le menu.", parse_mode="Markdown")
             except Exception:
                 pass
+            return
+
+        elif action == "setmode" and step == "enter_text":
+            cid = state["cid"]
+            ch_name = state.get("ch_name", cid)
+            admin_flow_state.pop(user.id, None)
+            mode_text = raw
+            d2 = load_data()
+            if cid in d2.get("channels", {}):
+                d2["channels"][cid]["mode_emploi"] = mode_text
+                save_data(d2)
+                await update.message.reply_text(
+                    f"✅ *Mode d'emploi mis à jour!*\n\n"
+                    f"📢 *Canal :* {ch_name}\n\n"
+                    f"📖 *Contenu enregistré :*\n_{mode_text[:300]}{'...' if len(mode_text) > 300 else ''}_\n\n"
+                    f"Les nouveaux membres recevront automatiquement ce guide à l'intégration.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")]]),
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text("❌ Canal introuvable.", parse_mode="Markdown")
             return
 
         return  # état inconnu, on ignore
@@ -1163,6 +1216,48 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
         username = f"@{user.username}" if user.username else "N/A"
+
+        # ── Envoyer le mode d'emploi en message de bienvenue ─────────
+        mode_emploi = ch.get("mode_emploi", "").strip()
+        if mode_emploi:
+            first_name = user.first_name or full_name or "cher membre"
+            ch_name = ch.get("name", chat.title or cid)
+            mention = f"[{first_name}](tg://user?id={uid})"
+
+            # 1. Toujours poster dans le canal avec le nom du membre
+            try:
+                channel_msg = (
+                    f"👋 *Bienvenue* {mention} *dans {ch_name} !*\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📖 *MODE D'EMPLOI & FONCTIONNEMENT*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"{mode_emploi}\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"❓ Pour toute question tape sur l'assistance @Kouam2025_bot\n\n"
+                    f"Pour en savoir plus"
+                )
+                await context.bot.send_message(int(cid), channel_msg, parse_mode="Markdown")
+                logger.info(f"Mode d'emploi posté dans le canal {cid} pour {uid} ({first_name})")
+            except Exception as e:
+                logger.warning(f"Impossible de poster le mode d'emploi dans le canal {cid}: {e}")
+
+            # 2. Tenter aussi un DM privé (bonus si l'utilisateur a déjà démarré le bot)
+            try:
+                dm_msg = (
+                    f"👋 *Bienvenue, {first_name}!*\n\n"
+                    f"Vous venez de rejoindre *{ch_name}*.\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📖 *MODE D'EMPLOI & FONCTIONNEMENT*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"{mode_emploi}\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"❓ Pour toute question tape sur l'assistance @Kouam2025_bot\n\n"
+                    f"Pour en savoir plus"
+                )
+                await context.bot.send_message(int(uid), dm_msg, parse_mode="Markdown")
+                logger.info(f"Mode d'emploi envoyé en DM à {uid}")
+            except Exception:
+                pass  # Normal si l'utilisateur n'a pas encore démarré le bot
 
         # Vérifier si c'est un membre payant (déjà enregistré via paiement)
         if uid in ch.get("members", {}):
@@ -1934,6 +2029,54 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
                 )
 
+        # ── Mode d'emploi ─────────────────────────────────────────────
+        elif sub == "me":
+            if not params:
+                # Afficher la liste des canaux
+                kb = _channel_kbd("me")
+                if not kb:
+                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
+                    return
+                await query.edit_message_text(
+                    "📖 *Mode d'emploi — Choisissez un canal :*\n\n"
+                    "_Sélectionnez le canal pour voir ou modifier son mode d'emploi._",
+                    reply_markup=kb, parse_mode="Markdown"
+                )
+            else:
+                cid = params[0]
+                ch = channels.get(cid)
+                if not ch:
+                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
+                    return
+                current_mode = ch.get("mode_emploi", "")
+                if len(params) == 1:
+                    # Afficher le mode d'emploi actuel + bouton modifier
+                    preview = f"📄 *Contenu actuel :*\n\n_{current_mode[:600]}{'...' if len(current_mode) > 600 else ''}_" if current_mode else "_Aucun mode d'emploi configuré pour ce canal._"
+                    await query.edit_message_text(
+                        f"📖 *Mode d'emploi — {ch.get('name', cid)}*\n\n"
+                        f"{preview}\n\n"
+                        f"Appuyez sur **Modifier** pour définir ou mettre à jour le guide.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✏️ Modifier le mode d'emploi", callback_data=f"fl_me_{cid}_edit")],
+                            [InlineKeyboardButton("🔙 Canaux", callback_data="fl_me")],
+                            *back_menu
+                        ]),
+                        parse_mode="Markdown"
+                    )
+                elif len(params) >= 2 and params[1] == "edit":
+                    # Lancer la saisie du mode d'emploi
+                    admin_flow_state[user.id] = {"action": "setmode", "step": "enter_text", "cid": cid, "ch_name": ch.get("name", cid)}
+                    await query.edit_message_text(
+                        f"✏️ *Modifier le mode d'emploi — {ch.get('name', cid)}*\n\n"
+                        f"Envoyez dans le chat le texte complet du mode d'emploi.\n\n"
+                        f"Ce guide sera :\n"
+                        f"• 📩 Envoyé automatiquement aux nouveaux membres\n"
+                        f"• 🤖 Utilisé par l'assistante pour répondre aux questions\n\n"
+                        f"⚠️ _N'incluez aucune stratégie interne — uniquement les instructions destinées aux membres._\n\n"
+                        f"_(Tapez /annuler pour annuler)_",
+                        parse_mode="Markdown"
+                    )
+
         # ── Ajouter admin ────────────────────────────────────────────
         elif sub == "aa":
             if user.id not in ADMINS:
@@ -2637,6 +2780,7 @@ def _admin_menu_keyboard(ai_toggle: bool) -> InlineKeyboardMarkup:
          InlineKeyboardButton("📊 Vérif. quota",   callback_data="adm_checkquota")],
         [InlineKeyboardButton("🔑 Config clé IA",  callback_data="adm_setaikey"),
          InlineKeyboardButton("📋 Mes clés IA",    callback_data="adm_listaikeys")],
+        [InlineKeyboardButton("📖 Mode d'emploi", callback_data="fl_me")],
         [InlineKeyboardButton("━━━ 🌐 Général ━━━",        callback_data="adm_noop")],
         [InlineKeyboardButton("👑 Gérer Admins",   callback_data="adm_admins"),
          InlineKeyboardButton("❓ Aide complète",  callback_data="adm_help")],
@@ -2904,6 +3048,37 @@ async def checkquota_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         full_msg = full_msg[:3990] + "\n_…(tronqué)_"
 
     await msg.edit_text(full_msg, parse_mode="Markdown")
+
+
+async def setmode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Commande /setmode — définit le mode d'emploi d'un canal (admin uniquement)."""
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Accès refusé.")
+        return
+
+    data = load_data()
+    channels = data.get("channels", {})
+    if not channels:
+        await update.message.reply_text("📢 Aucun canal géré. Ajoutez le bot comme admin d'un canal d'abord.")
+        return
+
+    rows = []
+    for cid, ch in channels.items():
+        rows.append([InlineKeyboardButton(
+            f"📢 {ch.get('name', cid)}",
+            callback_data=f"fl_me_{cid}"
+        )])
+    if not rows:
+        await update.message.reply_text("📢 Aucun canal géré.")
+        return
+    rows.append([InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")])
+
+    await update.message.reply_text(
+        "📖 *Mode d'emploi — Choisissez un canal :*\n\n"
+        "_Sélectionnez le canal pour voir ou modifier son mode d'emploi._",
+        reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+    )
 
 
 async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4484,6 +4659,7 @@ async def main():
     application.add_handler(CommandHandler("scan", scan_command))
     application.add_handler(CommandHandler("setaikey", setaikey_command))
     application.add_handler(CommandHandler("listaikeys", listaikeys_command))
+    application.add_handler(CommandHandler("setmode", setmode_command))
     application.add_handler(CommandHandler("checkquota", checkquota_command))
     application.add_handler(CommandHandler("addadmin", addadmin_command))
     application.add_handler(CommandHandler("removeadmin", removeadmin_command))

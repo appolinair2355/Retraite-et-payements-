@@ -1,9 +1,5 @@
 {
     "channels": {},
     "global_admins": [],
-    "ai_enabled": true,
-    "ai_keys": {},
-    "bonus_used": [],
-    "extra_admins": [],
-    "telethon_session": ""
+    "ai_enabled": true
 }
