@@ -15,12 +15,7 @@ from telegram.ext import (
     CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
 )
 
-from config import (
-    BOT_TOKEN, ADMINS, PORT, DATA_FILE, CHECK_INTERVAL,
-    GEMINI_API_KEY, GEMINI_API_KEYS, OPENAI_API_KEYS, GROQ_API_KEYS,
-    DEEPSEEK_API_KEYS, OCR_SPACE_API_KEY,
-    TELETHON_API_ID, TELETHON_API_HASH,
-)
+from config import BOT_TOKEN, ADMINS, PORT, DATA_FILE, CHECK_INTERVAL, GEMINI_API_KEY, TELETHON_API_ID, TELETHON_API_HASH
 import telethon_manager
 
 logging.basicConfig(
@@ -29,378 +24,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Imports IA ────────────────────────────────────────────────
-try:
-    from google import genai as google_genai
-    from google.genai import types as genai_types
-except ImportError:
-    google_genai = None
-    genai_types = None
-
-try:
-    import openai as openai_lib
-except ImportError:
-    openai_lib = None
-
-# ── Fournisseurs IA disponibles ────────────────────────────────
-AI_PROVIDERS = [
-    {"code": "gemini",   "name": "Google Gemini",    "model": "gemini-2.5-flash-lite"},
-    {"code": "openai",   "name": "OpenAI (ChatGPT)", "model": "gpt-4o-mini"},
-    {"code": "deepseek", "name": "DeepSeek",         "model": "deepseek-chat",      "base_url": "https://api.deepseek.com"},
-    {"code": "groq",     "name": "Groq",             "model": "llama3-8b-8192",     "base_url": "https://api.groq.com/openai/v1"},
-]
-
-# Formats de clé attendus par fournisseur
-_KEY_PATTERNS = {
-    "gemini":   {"prefix": ["AIza"], "min_len": 30,
-                 "hint": "commence par `AIza` (ex: `AIzaSyDg0OQ...`)"},
-    "openai":   {"prefix": ["sk-"],  "min_len": 20,
-                 "hint": "commence par `sk-` (ex: `sk-proj-...`)"},
-    "deepseek": {"prefix": ["sk-"],  "min_len": 20,
-                 "hint": "commence par `sk-` (ex: `sk-...`)"},
-    "groq":     {"prefix": ["gsk_"], "min_len": 20,
-                 "hint": "commence par `gsk_` (ex: `gsk_...`)"},
-}
-
-
-def _validate_key_format(provider: str, key: str) -> tuple:
-    """Valide le format d'une clé API. Retourne (valide, message_erreur)."""
-    key = key.strip()
-    pattern = _KEY_PATTERNS.get(provider)
-    if not pattern:
-        return len(key) >= 10, "Format inconnu"
-    if len(key) < pattern["min_len"]:
-        return False, f"Clé trop courte. Une clé {provider} {pattern['hint']}."
-    if not any(key.startswith(pfx) for pfx in pattern["prefix"]):
-        return False, f"Format incorrect. Une clé {provider} {pattern['hint']}."
-    return True, ""
-
-
-def _format_quota_line(label: str, remaining, limit) -> str:
-    """Formate une ligne de quota avec barre de progression."""
-    try:
-        rem = int(remaining)
-        lim = int(limit)
-        if lim > 0:
-            pct = int((rem / lim) * 100)
-            filled = int(pct / 10)
-            bar = "█" * filled + "░" * (10 - filled)
-            return f"{label}: `{rem:,}/{lim:,}` [{bar}] {pct}%"
-        return f"{label}: `{rem:,}`"
-    except (TypeError, ValueError):
-        return f"{label}: `{remaining}`"
-
-
-async def _test_ai_key(provider: str, key: str) -> tuple:
-    """
-    Teste une clé API avec un appel minimal et lit les infos de quota en temps réel.
-    Retourne (succès, message_statut).
-
-    Pour les fournisseurs OpenAI-compatibles (OpenAI, Groq, DeepSeek) :
-      → lit les headers x-ratelimit-* pour afficher le quota en temps réel.
-    Pour Gemini :
-      → confirme que la clé fonctionne + affiche les tokens utilisés.
-
-    Note : le quota mensuel/billing n'est pas accessible par API
-    (uniquement via le dashboard du fournisseur).
-    """
-    p_info = next((p for p in AI_PROVIDERS if p["code"] == provider), None)
-    if not p_info:
-        return False, "❌ Fournisseur inconnu"
-
-    try:
-        if provider == "gemini":
-            if google_genai is None:
-                return False, "❌ Bibliothèque Gemini non disponible"
-            client = _init_gemini_client(key)
-            resp = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: client.models.generate_content(
-                    model=p_info["model"],
-                    contents=[{"role": "user", "parts": [{"text": "OK"}]}]
-                )
-            )
-            # Lire usage_metadata si disponible
-            lines = ["✅ **Clé Gemini valide — quota disponible**\n"]
-            try:
-                um = resp.usage_metadata
-                prompt_tok  = getattr(um, "prompt_token_count", "?")
-                cand_tok    = getattr(um, "candidates_token_count", "?")
-                total_tok   = getattr(um, "total_token_count", "?")
-                lines.append(f"📊 **Tokens ce test :** entrée `{prompt_tok}` + sortie `{cand_tok}` = `{total_tok}` total")
-            except Exception:
-                pass
-            lines.append("\n_ℹ️ Quota mensuel/billing : consultez console.cloud.google.com_")
-            return True, "\n".join(lines)
-
-        elif provider in ("openai", "deepseek", "groq"):
-            if openai_lib is None:
-                return False, "❌ Bibliothèque OpenAI non disponible"
-            kwargs = {"api_key": key, "max_retries": 0}
-            if "base_url" in p_info:
-                kwargs["base_url"] = p_info["base_url"]
-            oa_client = openai_lib.AsyncOpenAI(**kwargs)
-
-            # Utiliser with_raw_response pour accéder aux headers HTTP
-            raw_resp = await oa_client.with_raw_response.chat.completions.create(
-                model=p_info["model"],
-                messages=[{"role": "user", "content": "OK"}],
-                max_tokens=3
-            )
-            hdrs = raw_resp.headers
-            completion = raw_resp.parse()
-
-            lines = [f"✅ **Clé {p_info['name']} valide — quota disponible**\n"]
-
-            # Requêtes
-            rem_req  = hdrs.get("x-ratelimit-remaining-requests")
-            lim_req  = hdrs.get("x-ratelimit-limit-requests")
-            rst_req  = hdrs.get("x-ratelimit-reset-requests")
-            # Tokens
-            rem_tok  = hdrs.get("x-ratelimit-remaining-tokens")
-            lim_tok  = hdrs.get("x-ratelimit-limit-tokens")
-            rst_tok  = hdrs.get("x-ratelimit-reset-tokens")
-
-            if rem_req is not None or lim_req is not None:
-                lines.append("📊 **Quota temps réel (fenêtre actuelle) :**")
-                if rem_req is not None:
-                    lines.append("  " + _format_quota_line("🔢 Requêtes", rem_req, lim_req or "?"))
-                if rst_req:
-                    lines.append(f"  ⏱ Reset requêtes dans : `{rst_req}`")
-                if rem_tok is not None:
-                    lines.append("  " + _format_quota_line("🪙 Tokens  ", rem_tok, lim_tok or "?"))
-                if rst_tok:
-                    lines.append(f"  ⏱ Reset tokens dans   : `{rst_tok}`")
-            else:
-                lines.append("📊 **Quota :** disponible _(headers non fournis par ce serveur)_")
-
-            # Usage de l'appel test
-            try:
-                u = completion.usage
-                if u:
-                    lines.append(f"\n📝 **Tokens ce test :** entrée `{u.prompt_tokens}` + sortie `{u.completion_tokens}` = `{u.total_tokens}`")
-            except Exception:
-                pass
-
-            pname = p_info["name"]
-            dashboards = {
-                "openai":   "platform.openai.com/usage",
-                "deepseek": "platform.deepseek.com/usage",
-                "groq":     "console.groq.com",
-            }
-            lines.append(f"\n_ℹ️ Quota mensuel/billing : {dashboards.get(provider, 'dashboard du fournisseur')}_")
-            return True, "\n".join(lines)
-
-    except Exception as e:
-        err_lower = str(e).lower()
-        if any(kw in err_lower for kw in ["quota", "rate limit", "429", "resource exhausted",
-                                           "too many requests", "exceeded"]):
-            return True, "⚠️ Clé valide mais **quota actuellement épuisé** (réessai automatique dans 1h)"
-        elif any(kw in err_lower for kw in ["invalid", "unauthorized", "401",
-                                             "authentication", "incorrect api key",
-                                             "api key not valid", "wrong api key",
-                                             "invalid_api_key"]):
-            return False, "❌ Clé API **invalide ou incorrecte** — vérifiez la clé dans votre dashboard"
-        else:
-            return False, f"⚠️ Vérification impossible : `{str(e)[:120]}`"
-
-    return False, "❌ Fournisseur non supporté"
-
-# État saisie de clé API (admin uniquement)
-# {user_id: {"provider": "gemini"}}
-ai_key_input_state = {}
-
-# État des flux admin interactifs (boutons)
-# {user_id: {"action": "grant", "step": "enter_uid", "cid": "...", ...}}
-admin_flow_state = {}
-
-# Quota épuisé en mémoire : {("gemini", 0): timestamp_epoch}
-ai_quota_exhausted = {}
-QUOTA_RESET_SECONDS = 3600  # réessaie après 1 heure
-
-# Client Gemini actif (compatible avec le reste du code)
+# IA Gemini
 gemini_client = None
-
-
-def _load_ai_keys() -> dict:
-    """
-    Retourne le dict {provider: [key1, key2, ...]} en fusionnant :
-      1. Les clés des variables d'environnement (GEMINI_API_KEYS, etc.)
-      2. Les clés persistées manuellement dans channels_data.json
-    Les doublons sont éliminés ; l'ordre env-vars → JSON est préservé.
-    """
-    data = load_data()
-    saved = data.get("ai_keys", {})
-
-    # Clés env vars par fournisseur
-    env_keys = {
-        "gemini":   GEMINI_API_KEYS,
-        "openai":   OPENAI_API_KEYS,
-        "groq":     GROQ_API_KEYS,
-        "deepseek": DEEPSEEK_API_KEYS,
-    }
-
-    merged = {}
-    for provider, env_list in env_keys.items():
-        combined = list(env_list)  # priorité env vars
-        for k in saved.get(provider, []):
-            if k not in combined:
-                combined.append(k)
-        if combined:
-            merged[provider] = combined
-
-    # Fournisseurs ajoutés manuellement (hors des 4 ci-dessus)
-    for provider, klist in saved.items():
-        if provider not in merged:
-            merged[provider] = klist
-
-    return merged
-
-
-def _save_ai_key(provider: str, key: str):
-    """Ajoute ou remplace une clé pour le fournisseur donné."""
-    data = load_data()
-    ai_keys = data.get("ai_keys", {})
-    if provider not in ai_keys:
-        ai_keys[provider] = []
-    if key not in ai_keys[provider]:
-        ai_keys[provider].append(key)
-    data["ai_keys"] = ai_keys
-    save_data(data)
-
-
-def _is_quota_ok(provider: str, idx: int) -> bool:
-    """Vérifie si la clé n'est pas en quota épuisé."""
-    ts = ai_quota_exhausted.get((provider, idx))
-    if ts is None:
-        return True
-    return (datetime.now().timestamp() - ts) > QUOTA_RESET_SECONDS
-
-
-def _mark_quota_exhausted(provider: str, idx: int):
-    """Marque une clé comme quota épuisé."""
-    ai_quota_exhausted[(provider, idx)] = datetime.now().timestamp()
-    logger.warning(f"⚠️ Quota épuisé pour {provider}[{idx}]")
-
-
-def _is_quota_error(exc: Exception) -> bool:
-    """Détecte une erreur de quota/rate-limit."""
-    msg = str(exc).lower()
-    quota_keywords = ["quota", "rate limit", "resource exhausted", "429", "too many requests",
-                      "exceeded", "limit exceeded", "rateerror"]
-    return any(kw in msg for kw in quota_keywords)
-
-
-def _init_gemini_client(key: str):
-    """Crée un client Gemini à partir d'une clé."""
-    if google_genai is None:
-        return None
-    return google_genai.Client(api_key=key)
-
-
-def _refresh_gemini_client():
-    """Met à jour le client Gemini global avec la première clé disponible."""
-    global gemini_client
-    keys = _load_ai_keys().get("gemini", [])
-    for i, k in enumerate(keys):
-        if _is_quota_ok("gemini", i):
-            gemini_client = _init_gemini_client(k)
-            return
-    gemini_client = None
-
-
-# Initialisation au démarrage avec la clé de config.py uniquement
-# (_load_ai_keys nécessite load_data défini plus bas — sera chargé au premier appel)
-try:
-    if GEMINI_API_KEY and google_genai:
+if GEMINI_API_KEY:
+    try:
+        from google import genai as google_genai
+        from google.genai import types as genai_types
         gemini_client = google_genai.Client(api_key=GEMINI_API_KEY)
-        logger.info("✅ Assistant IA Gemini initialisé (clé config)")
-except Exception as e:
-    logger.warning(f"⚠️ Impossible d'initialiser Gemini: {e}")
-
-
-async def _ai_call_with_fallback(contents: list) -> str:
-    """
-    Appelle l'IA avec fallback automatique entre fournisseurs et clés.
-    Retourne le texte de la réponse, ou None si tout échoue.
-    """
-    global gemini_client
-    all_keys = _load_ai_keys()
-
-    for provider_info in AI_PROVIDERS:
-        pcode = provider_info["code"]
-        model = provider_info["model"]
-        keys = all_keys.get(pcode, [])
-
-        for idx, key in enumerate(keys):
-            if not _is_quota_ok(pcode, idx):
-                continue
-
-            try:
-                if pcode == "gemini":
-                    client = _init_gemini_client(key)
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda c=client, m=model, ct=contents: c.models.generate_content(
-                            model=m, contents=ct
-                        )
-                    )
-                    # Mettre à jour le client global si succès
-                    gemini_client = client
-                    return response.text
-
-                elif pcode in ("openai", "deepseek", "groq") and openai_lib:
-                    kwargs = {"api_key": key}
-                    if "base_url" in provider_info:
-                        kwargs["base_url"] = provider_info["base_url"]
-                    oa_client = openai_lib.AsyncOpenAI(**kwargs)
-                    # Convertir le format contents Gemini → OpenAI messages
-                    messages = []
-                    for item in contents:
-                        role = "assistant" if item.get("role") == "model" else item.get("role", "user")
-                        text = "".join(part.get("text", "") for part in item.get("parts", []))
-                        messages.append({"role": role, "content": text})
-
-                    completion = await oa_client.chat.completions.create(
-                        model=model,
-                        messages=messages
-                    )
-                    return completion.choices[0].message.content
-
-            except Exception as e:
-                if _is_quota_error(e):
-                    _mark_quota_exhausted(pcode, idx)
-                    logger.warning(f"Quota épuisé {pcode}[{idx}], essai suivant…")
-                    continue
-                else:
-                    logger.error(f"Erreur IA {pcode}[{idx}]: {e}")
-                    continue
-
-    return None
-
-
-async def _notify_admins_quota_exhausted(bot):
-    """Notifie les admins que tous les quotas sont épuisés."""
-    all_keys = _load_ai_keys()
-    providers_info = []
-    for p in AI_PROVIDERS:
-        keys = all_keys.get(p["code"], [])
-        if keys:
-            providers_info.append(f"• {p['name']} ({len(keys)} clé(s))")
-
-    providers_str = "\n".join(providers_info) if providers_info else "• Aucune clé configurée"
-    msg = (
-        "🚨 **Alerte : Quotas IA épuisés**\n\n"
-        "Tous les quotas des clés API IA sont épuisés :\n"
-        f"{providers_str}\n\n"
-        "➡️ Utilisez `/setaikey` pour ajouter de nouvelles clés API.\n"
-        "_Les quotas se réinitialisent automatiquement après 1 heure._"
-    )
-    for admin_id in ADMINS:
-        try:
-            await bot.send_message(admin_id, msg, parse_mode="Markdown")
-        except Exception:
-            pass
+        logger.info("✅ Assistant IA Gemini initialisé")
+    except Exception as e:
+        logger.warning(f"⚠️ Impossible d'initialiser Gemini: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTES PAIEMENT
@@ -420,7 +53,6 @@ payment_state = {}
 # État des demandes de bonus en attente d'approbation admin
 # {user_id: {"channel_id": str, "channel_name": str, "user_name": str}}
 bonus_state = {}
-bonus_msg_state = {}   # {user_id: {"cid": ..., "ch_name": ..., "step": "typing"}}
 
 # Liens d'invitation en attente de confirmation admin
 # {(cid, uid_str): invite_link_str}
@@ -452,11 +84,8 @@ def save_data(data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-extra_admins: set = set()  # admins ajoutés dynamiquement (persistés en JSON)
-
-
 def is_admin(user_id):
-    return user_id in ADMINS or user_id in extra_admins
+    return user_id in ADMINS
 
 
 def format_time_remaining(seconds):
@@ -478,13 +107,18 @@ def get_channel_data(data, channel_id):
     if cid not in data["channels"]:
         data["channels"][cid] = {
             "name": f"Canal {cid}",
-            "default_duration_hours": 24,
+            "default_duration_seconds": 86400,
             "members": {},
             "blocked": {}
         }
     ch = data["channels"][cid]
     if "blocked" not in ch:
         ch["blocked"] = {}
+    # Migration automatique: ancien champ → nouveau champ
+    if "default_duration_seconds" not in ch and "default_duration_hours" in ch:
+        ch["default_duration_seconds"] = ch["default_duration_hours"] * 3600
+    elif "default_duration_seconds" not in ch:
+        ch["default_duration_seconds"] = 86400
     return ch
 
 
@@ -504,13 +138,13 @@ def format_duration_label(total_seconds: int) -> str:
 def member_keyboard(cid: str, uid: str, default_hours: int):
     """Clavier standard pour accorder l'accès à un membre"""
     return [
-        [InlineKeyboardButton("⏱ 24h", callback_data=f"grant_{cid}_{uid}_24"),
-         InlineKeyboardButton("⏱ 48h", callback_data=f"grant_{cid}_{uid}_48"),
-         InlineKeyboardButton("⏱ 72h", callback_data=f"grant_{cid}_{uid}_72")],
-        [InlineKeyboardButton(
-            f"⏱ Défaut ({default_hours}h)",
-            callback_data=f"grant_{cid}_{uid}_{default_hours}"
-        )],
+        [InlineKeyboardButton("⏱ 30min", callback_data=f"grantm_{cid}_{uid}_30"),
+         InlineKeyboardButton("⏱ 1h",    callback_data=f"grant_{cid}_{uid}_1"),
+         InlineKeyboardButton("⏱ 5h",    callback_data=f"grant_{cid}_{uid}_5")],
+        [InlineKeyboardButton("⏱ 24h",   callback_data=f"grant_{cid}_{uid}_24"),
+         InlineKeyboardButton("⏱ 48h",   callback_data=f"grant_{cid}_{uid}_48")],
+        [InlineKeyboardButton("📅 7 jours",  callback_data=f"grant_{cid}_{uid}_168"),
+         InlineKeyboardButton("📅 1 mois",   callback_data=f"grant_{cid}_{uid}_720")],
         [InlineKeyboardButton("❌ Retirer maintenant", callback_data=f"kick_{cid}_{uid}")]
     ]
 
@@ -533,14 +167,9 @@ async def web_handler(request):
     )
 
 
-async def health_handler(request):
-    return web.Response(text="OK", content_type="text/plain")
-
-
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', web_handler)
-    app.router.add_get('/health', health_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
@@ -608,7 +237,7 @@ APPLICATIONS DE PAIEMENT RECONNUES PAR LE BOT:
 - Europe/France: PayPal, Revolut, Wise, Lydia, Sumeria, virement bancaire
 - Afrique de l'Ouest: Wave, Orange Money, MTN Mobile Money, MoneyFusion, Free Money, Moov Money
 - USA/International: CashApp, Venmo, Zelle
-- Crypto: BNB (Binance Smart Chain) et TRX (Tron)
+- Crypto: BNB (Binance)
 
 Quand un utilisateur demande le prix ou l'abonnement mensuel, mets TOUJOURS en avant l'offre à 50 USD/mois comme l'offre principale et la plus avantageuse.
 
@@ -632,14 +261,10 @@ RÈGLES DE PAIEMENT PAR PAYS
      → Lien MoneyFusion UNIQUEMENT : https://my.moneyfusion.net/69988c55ee1fe6f8b700aa50
      → NE JAMAIS montrer l'adresse crypto
    - HORS AFRIQUE (Europe, Amérique, Asie, Océanie, etc.)
-     → Crypto au choix (propose les deux options) :
-       • BNB (Binance Smart Chain) : 0x13108641DcfaBea3b2e8dEd4d35B8f49606f5A17
-       • TRX (Tron) : TZ91vunM8NgV6gG6JURe2HeWiMvhWjv8pZ
+     → Crypto BNB UNIQUEMENT : 0x13108641DcfaBea3b2e8dEd4d35B8f49606f5A17
      → NE JAMAIS montrer le lien MoneyFusion
-3. EXCEPTION : Si l'utilisateur demande EXPLICITEMENT la crypto (même en Afrique) → propose les deux adresses :
-   • BNB : 0x13108641DcfaBea3b2e8dEd4d35B8f49606f5A17
-   • TRX : TZ91vunM8NgV6gG6JURe2HeWiMvhWjv8pZ
-4. Ne jamais montrer les deux méthodes (MoneyFusion + crypto) ensemble pour la même région.
+3. EXCEPTION : Si l'utilisateur demande EXPLICITEMENT la crypto → adresse BNB : 0x13108641DcfaBea3b2e8dEd4d35B8f49606f5A17
+4. Ne jamais montrer les deux méthodes ensemble.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXPIRATION ET RENOUVELLEMENT
@@ -697,71 +322,44 @@ STYLE
 - Pour les questions hors sujet, réponds brièvement et redirige.
 """
 
-async def ai_reply(user_id: int, user_message: str, bot=None) -> str:
-    """Génère une réponse IA avec fallback automatique entre fournisseurs."""
-    all_keys = _load_ai_keys()
-    has_any_key = any(all_keys.get(p["code"]) for p in AI_PROVIDERS)
-
-    if not has_any_key:
+async def ai_reply(user_id: int, user_message: str) -> str:
+    """Génère une réponse IA pour un utilisateur"""
+    if not gemini_client:
         return (
             "👋 Bonjour! Je suis le bot de gestion d'accès.\n\n"
             "Contactez un administrateur pour obtenir l'accès aux canaux privés."
         )
+    try:
+        uid = str(user_id)
+        history = conversation_history.get(uid, [])
 
-    uid = str(user_id)
-    history = conversation_history.get(uid, [])
+        # Construire les messages avec l'historique
+        contents = [{"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
+                    {"role": "model", "parts": [{"text": "Bien compris, je suis prêt à aider."}]}]
+        contents.extend(history)
+        contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-    # Injecter les modes d'emploi des canaux auxquels l'utilisateur appartient
-    data_ai = load_data()
-    mode_emploi_context = ""
-    for cid, ch in data_ai.get("channels", {}).items():
-        mode = ch.get("mode_emploi", "").strip()
-        if mode:
-            ch_name = ch.get("name", cid)
-            if uid in ch.get("members", {}):
-                mode_emploi_context += (
-                    f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"MODE D'EMPLOI DU CANAL : {ch_name}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{mode}\n"
-                )
-
-    full_system_prompt = SYSTEM_PROMPT
-    if mode_emploi_context:
-        full_system_prompt += (
-            "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "GUIDE D'UTILISATION DES CANAUX (fourni par l'administrateur)\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Quand un utilisateur pose des questions sur le fonctionnement du bot ou du canal, "
-            "utilise UNIQUEMENT les informations ci-dessous. "
-            "Ne révèle jamais de stratégie interne, uniquement ce qui est écrit ici.\n"
-            f"{mode_emploi_context}"
+        response = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: gemini_client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=contents
+            )
         )
+        reply_text = response.text
 
-    contents = [
-        {"role": "user", "parts": [{"text": full_system_prompt}]},
-        {"role": "model", "parts": [{"text": "Bien compris, je suis prêt à aider."}]}
-    ]
-    contents.extend(history)
-    contents.append({"role": "user", "parts": [{"text": user_message}]})
+        # Sauvegarder l'historique (max 10 échanges)
+        history.append({"role": "user", "parts": [{"text": user_message}]})
+        history.append({"role": "model", "parts": [{"text": reply_text}]})
+        conversation_history[uid] = history[-20:]
 
-    reply_text = await _ai_call_with_fallback(contents)
-
-    if reply_text is None:
-        # Tous les quotas sont épuisés
-        if bot:
-            asyncio.create_task(_notify_admins_quota_exhausted(bot))
+        return reply_text
+    except Exception as e:
+        logger.error(f"Erreur IA pour {user_id}: {e}")
         return (
-            "⚠️ Le service IA est temporairement indisponible (quota épuisé).\n"
-            "Veuillez contacter un administrateur."
+            "Désolé, je n'ai pas pu traiter votre message. "
+            "Contactez un administrateur pour plus d'informations."
         )
-
-    # Sauvegarder l'historique (max 20 messages)
-    history.append({"role": "user", "parts": [{"text": user_message}]})
-    history.append({"role": "model", "parts": [{"text": reply_text}]})
-    conversation_history[uid] = history[-20:]
-
-    return reply_text
 
 
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -783,219 +381,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await save_telethon_session(session_str, context, user.id)
         return
 
-    # 2. Intercepter la saisie d'une clé API IA (admin uniquement)
-    if is_admin(user.id) and user.id in ai_key_input_state:
-        state = ai_key_input_state.pop(user.id)
-        provider = state["provider"]
-        new_key = text.strip()
-        provider_name = next((p["name"] for p in AI_PROVIDERS if p["code"] == provider), provider)
-
-        # Validation du format de la clé
-        fmt_ok, fmt_err = _validate_key_format(provider, new_key)
-        if not fmt_ok:
-            await update.message.reply_text(
-                f"❌ **Format de clé incorrect**\n\n{fmt_err}\n\n"
-                f"Réessayez avec `/setaikey`.",
-                parse_mode="Markdown"
-            )
-            return
-
-        # Informer que la vérification est en cours
-        checking_msg = await update.message.reply_text(
-            f"🔄 **Vérification de la clé {provider_name}…**\n\nTest du quota en cours, merci de patienter.",
-            parse_mode="Markdown"
-        )
-
-        # Tester la clé (quota check)
-        test_ok, test_status = await _test_ai_key(provider, new_key)
-
-        if not test_ok:
-            await checking_msg.edit_text(
-                f"❌ **Clé refusée — {provider_name}**\n\n{test_status}\n\n"
-                f"Vérifiez votre clé et réessayez avec `/setaikey`.",
-                parse_mode="Markdown"
-            )
-            return
-
-        # Sauvegarder la clé
-        _save_ai_key(provider, new_key)
-
-        # Réinitialiser les quotas épuisés pour ce fournisseur
-        keys_to_clear = [k for k in ai_quota_exhausted if k[0] == provider]
-        for k in keys_to_clear:
-            del ai_quota_exhausted[k]
-
-        # Rafraîchir le client Gemini si c'est Gemini
-        if provider == "gemini":
-            _refresh_gemini_client()
-
-        all_keys = _load_ai_keys()
-        nb_keys = len(all_keys.get(provider, []))
-        await checking_msg.edit_text(
-            f"✅ **Clé {provider_name} ajoutée avec succès!**\n\n"
-            f"{test_status}\n"
-            f"🔑 {nb_keys} clé(s) configurée(s) pour {provider_name}.\n\n"
-            f"L'assistant utilisera automatiquement cette clé avec fallback automatique.",
-            parse_mode="Markdown"
-        )
-        return
-
-    # 3. Intercepter saisie texte du flux admin interactif
-    if is_admin(user.id) and user.id in admin_flow_state:
-        state = admin_flow_state[user.id]
-        raw = text.strip()
-        action = state.get("action")
-        step   = state.get("step")
-
-        if action == "grant" and step == "enter_uid":
-            try:
-                uid = str(int(raw))
-            except ValueError:
-                await update.message.reply_text("❌ ID invalide. Envoyez uniquement l'identifiant numérique Telegram.", parse_mode="Markdown")
-                return
-            cid = state["cid"]
-            ch_name = state.get("ch_name", cid)
-            admin_flow_state.pop(user.id, None)
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏱ 24h", callback_data=f"fl_gr_{cid}_{uid}_24"),
-                 InlineKeyboardButton("⏱ 48h", callback_data=f"fl_gr_{cid}_{uid}_48"),
-                 InlineKeyboardButton("⏱ 72h", callback_data=f"fl_gr_{cid}_{uid}_72")],
-                [InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")],
-            ])
-            await update.message.reply_text(
-                f"✅ *Accorder accès — {ch_name}*\n\n👤 Utilisateur: `{uid}`\n\nChoisissez la durée :",
-                reply_markup=kb, parse_mode="Markdown"
-            )
-            return
-
-        elif action == "bonus" and step == "enter_uid":
-            try:
-                uid = str(int(raw))
-            except ValueError:
-                await update.message.reply_text("❌ ID invalide. Envoyez uniquement l'identifiant numérique Telegram.", parse_mode="Markdown")
-                return
-            cid = state["cid"]
-            ch_name = state.get("ch_name", cid)
-            admin_flow_state.pop(user.id, None)
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏱ 24h", callback_data=f"fl_bn_{cid}_{uid}_24"),
-                 InlineKeyboardButton("⏱ 48h", callback_data=f"fl_bn_{cid}_{uid}_48"),
-                 InlineKeyboardButton("⏱ 72h", callback_data=f"fl_bn_{cid}_{uid}_72")],
-                [InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")],
-            ])
-            await update.message.reply_text(
-                f"🎁 *Bonus — {ch_name}*\n\n👤 Utilisateur: `{uid}`\n\nChoisissez la durée :",
-                reply_markup=kb, parse_mode="Markdown"
-            )
-            return
-
-        elif action == "addadmin" and step == "enter_id":
-            try:
-                new_id = int(raw)
-            except ValueError:
-                await update.message.reply_text("❌ ID invalide. Envoyez uniquement l'identifiant numérique.", parse_mode="Markdown")
-                return
-            admin_flow_state.pop(user.id, None)
-            if new_id in extra_admins or new_id in ADMINS:
-                await update.message.reply_text(f"ℹ️ L'utilisateur `{new_id}` est déjà administrateur.", parse_mode="Markdown")
-                return
-            d2 = load_data()
-            lst = d2.get("extra_admins", [])
-            lst.append(new_id)
-            d2["extra_admins"] = lst
-            save_data(d2)
-            extra_admins.add(new_id)
-            await update.message.reply_text(
-                f"✅ *Administrateur ajouté!*\n\n🆔 ID: `{new_id}`\n\nIl peut maintenant utiliser toutes les commandes admin.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")]]),
-                parse_mode="Markdown"
-            )
-            try:
-                await context.bot.send_message(new_id, "✅ *Vous avez été ajouté comme administrateur!*\n\nTapez /start pour voir le menu.", parse_mode="Markdown")
-            except Exception:
-                pass
-            return
-
-        elif action == "setmode" and step == "enter_text":
-            cid = state["cid"]
-            ch_name = state.get("ch_name", cid)
-            admin_flow_state.pop(user.id, None)
-            mode_text = raw
-            d2 = load_data()
-            if cid in d2.get("channels", {}):
-                d2["channels"][cid]["mode_emploi"] = mode_text
-                save_data(d2)
-                await update.message.reply_text(
-                    f"✅ *Mode d'emploi mis à jour!*\n\n"
-                    f"📢 *Canal :* {ch_name}\n\n"
-                    f"📖 *Contenu enregistré :*\n_{mode_text[:300]}{'...' if len(mode_text) > 300 else ''}_\n\n"
-                    f"Les nouveaux membres recevront automatiquement ce guide à l'intégration.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")]]),
-                    parse_mode="Markdown"
-                )
-            else:
-                await update.message.reply_text("❌ Canal introuvable.", parse_mode="Markdown")
-            return
-
-        return  # état inconnu, on ignore
-
-    # 4. Intercepter le message de demande de bonus (utilisateur ayant déjà utilisé son bonus)
-    if user.id in bonus_msg_state and bonus_msg_state[user.id].get("step") == "typing":
-        state = bonus_msg_state.pop(user.id)
-        cid = state["cid"]
-        ch_name = state["ch_name"]
-        msg_text = text.strip()
-
-        if len(msg_text) < 20:
-            # Message trop court → redemander
-            bonus_msg_state[user.id] = state  # remettre l'état
-            await update.message.reply_text(
-                "❌ Votre message est trop court.\n\n"
-                "Développez votre demande avec des arguments sérieux.\n"
-                "_Rédigez un message plus convaincant:_",
-                parse_mode="Markdown"
-            )
-            return
-
-        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-        username_str = f"@{user.username}" if user.username else "N/A"
-
-        # Confirmer à l'utilisateur
-        await update.message.reply_text(
-            "✅ *Votre message a été transmis à l'administrateur.*\n\n"
-            "Vous serez notifié de la réponse.\n\n"
-            "_Conseil: s'il n'y a pas de réponse rapide, l'administrateur a peut-être "
-            "jugé votre demande non convaincante. Pensez à souscrire un abonnement via /payer_",
-            parse_mode="Markdown"
-        )
-
-        # Envoyer aux admins avec boutons d'approbation
-        approve_keyboard = [
-            [InlineKeyboardButton("✅ Accorder 24h", callback_data=f"bapprove_{user.id}_{cid}_24"),
-             InlineKeyboardButton("✅ Accorder 72h", callback_data=f"bapprove_{user.id}_{cid}_72")],
-            [InlineKeyboardButton("✅ Accorder 7 jours", callback_data=f"bapprove_{user.id}_{cid}_168"),
-             InlineKeyboardButton("✅ Accorder 1 mois", callback_data=f"bapprove_{user.id}_{cid}_720")],
-            [InlineKeyboardButton("❌ Refuser", callback_data=f"bdeny_{user.id}_{cid}")],
-        ]
-        for admin_id in ADMINS:
-            try:
-                await context.bot.send_message(
-                    admin_id,
-                    f"✉️ *Demande d'accès — Bonus épuisé*\n\n"
-                    f"👤 Utilisateur: *{full_name}* ({username_str})\n"
-                    f"🆔 ID: `{user.id}`\n"
-                    f"📢 Canal: *{ch_name}*\n\n"
-                    f"📝 *Message de l'utilisateur:*\n"
-                    f"_{msg_text}_\n\n"
-                    f"Accordez-vous l'accès?",
-                    reply_markup=InlineKeyboardMarkup(approve_keyboard),
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Notif bonus_msg à admin {admin_id}: {e}")
-        return
-
-    # 5. Si l'utilisateur est en attente d'une capture de paiement, lui rappeler
+    # 2. Si l'utilisateur est en attente d'une capture de paiement, lui rappeler
     if user.id in payment_state and payment_state[user.id].get("step") == "screenshot":
         await update.message.reply_text(
             "📸 Envoyez la **capture d'écran** de votre paiement (une image).",
@@ -1003,7 +389,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    # 4. L'IA ne répond QUE si l'utilisateur est en mode assistance
+    # 3. L'IA ne répond QUE si l'utilisateur est en mode assistance
     if user.id not in assistance_mode:
         return  # Ignorer silencieusement — pas de réponse hors mode assistance
 
@@ -1017,7 +403,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Indiquer que le bot est en train d'écrire
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    response = await ai_reply(user.id, text, bot=context.bot)
+    response = await ai_reply(user.id, text)
 
     # Bouton "Retourner à l'accueil" après chaque réponse
     home_keyboard = [[InlineKeyboardButton("🏠 Retourner à l'accueil", callback_data="home")]]
@@ -1053,10 +439,13 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
         for admin_id in ADMINS:
             try:
                 keyboard = [
-                    [InlineKeyboardButton("⏱ 24h", callback_data=f"setdef_{cid}_24"),
-                     InlineKeyboardButton("⏱ 48h", callback_data=f"setdef_{cid}_48")],
-                    [InlineKeyboardButton("⏱ 7 jours", callback_data=f"setdef_{cid}_168"),
-                     InlineKeyboardButton("⏱ 30 jours", callback_data=f"setdef_{cid}_720")],
+                    [InlineKeyboardButton("⏱ 30min", callback_data=f"setdef_{cid}_1800"),
+                     InlineKeyboardButton("⏱ 1h",    callback_data=f"setdef_{cid}_3600"),
+                     InlineKeyboardButton("⏱ 5h",    callback_data=f"setdef_{cid}_18000")],
+                    [InlineKeyboardButton("⏱ 24h",   callback_data=f"setdef_{cid}_86400"),
+                     InlineKeyboardButton("⏱ 48h",   callback_data=f"setdef_{cid}_172800")],
+                    [InlineKeyboardButton("📅 7 jours",  callback_data=f"setdef_{cid}_604800"),
+                     InlineKeyboardButton("📅 1 mois",   callback_data=f"setdef_{cid}_2592000")],
                 ]
                 await context.bot.send_message(
                     admin_id,
@@ -1102,7 +491,7 @@ async def scan_channel_members(context, channel_id, channel_name):
         cid = str(channel_id)
         ch = get_channel_data(data, channel_id)
         existing_members = set(ch.get("members", {}).keys())
-        default_hours = ch.get("default_duration_hours", 24)
+        default_hours = ch.get("default_duration_seconds", 86400)
 
         # Essayer Telethon en priorité (accès à tous les membres)
         telethon_users = []
@@ -1217,58 +606,74 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
         username = f"@{user.username}" if user.username else "N/A"
 
-        # ── Envoyer le mode d'emploi en message de bienvenue ─────────
-        mode_emploi = ch.get("mode_emploi", "").strip()
-        if mode_emploi:
-            first_name = user.first_name or full_name or "cher membre"
-            ch_name = ch.get("name", chat.title or cid)
-            mention = f"[{first_name}](tg://user?id={uid})"
-
-            # 1. Toujours poster dans le canal avec le nom du membre
-            try:
-                channel_msg = (
-                    f"👋 *Bienvenue* {mention} *dans {ch_name} !*\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📖 *MODE D'EMPLOI & FONCTIONNEMENT*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"{mode_emploi}\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"❓ Pour toute question tape sur l'assistance @Kouam2025_bot\n\n"
-                    f"Pour en savoir plus"
-                )
-                await context.bot.send_message(int(cid), channel_msg, parse_mode="Markdown")
-                logger.info(f"Mode d'emploi posté dans le canal {cid} pour {uid} ({first_name})")
-            except Exception as e:
-                logger.warning(f"Impossible de poster le mode d'emploi dans le canal {cid}: {e}")
-
-            # 2. Tenter aussi un DM privé (bonus si l'utilisateur a déjà démarré le bot)
-            try:
-                dm_msg = (
-                    f"👋 *Bienvenue, {first_name}!*\n\n"
-                    f"Vous venez de rejoindre *{ch_name}*.\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📖 *MODE D'EMPLOI & FONCTIONNEMENT*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"{mode_emploi}\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"❓ Pour toute question tape sur l'assistance @Kouam2025_bot\n\n"
-                    f"Pour en savoir plus"
-                )
-                await context.bot.send_message(int(uid), dm_msg, parse_mode="Markdown")
-                logger.info(f"Mode d'emploi envoyé en DM à {uid}")
-            except Exception:
-                pass  # Normal si l'utilisateur n'a pas encore démarré le bot
+        # ── Message d'accueil envoyé à TOUS les membres qui rejoignent ──
+        mode_emploi = (
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 **MODE D'EMPLOI – BOT DE PRÉDICTION BACCARAT**\n\n"
+            f"🎯 **Principe de fonctionnement**\n"
+            f"Le bot prédit les cartes suivantes :\n"
+            f"♠️ (Pique), ♦️ (Carreau), ♣️ (Trèfle), ❤️ (Cœur).\n\n"
+            f"🕹️ **Comment utiliser les prédictions**\n"
+            f"▪️ Le bot affiche un numéro de manche en tête.\n"
+            f"▪️ Allez sur votre plateforme de jeu (bookmaker), section Baccarat, et trouvez ce numéro.\n"
+            f"▪️ Sélectionnez : 👉 « Le joueur reçoit une carte enseigne »\n"
+            f"▪️ Choisissez la carte indiquée par le bot.\n\n"
+            f"🔁 **En cas d'échec**\n"
+            f"👉 Passez immédiatement au numéro suivant (affiché en bas des prédictions) et rejouez.\n\n"
+            f"⚠️ **Recommandations stratégiques**\n"
+            f"▪️ Attendez une première perte du bot avant de miser (recommandé).\n"
+            f"▪️ Les plus confiants peuvent jouer dès la première prédiction.\n"
+            f"▪️ Le bot émet 4 prédictions consécutives, puis s'arrête (nouvelle série).\n\n"
+            f"💰 **Plan de mise (progression recommandée)**\n"
+            f"▪️ 500 FCFA → 1 200 FCFA → 2 500 FCFA\n"
+            f"▪️ 5 500 FCFA → 12 000 FCFA → 25 000 FCFA\n"
+            f"👉 En cas de gain : revenez à 500 FCFA.\n\n"
+            f"🧠 **Conseils essentiels**\n"
+            f"▪️ Respectez rigoureusement le plan de mise.\n"
+            f"▪️ Max 4 prédictions par jour.\n"
+            f"▪️ Ne dépassez pas les 6 niveaux de mise.\n"
+            f"▪️ Évitez toute décision impulsive.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💳 **MODE DE PAIEMENT & RENOUVELLEMENT**\n\n"
+            f"1️⃣ Tapez /start dans ce bot pour ouvrir le menu principal.\n"
+            f"2️⃣ Appuyez sur 💳 **Payer mon abonnement** (ou tapez /payer).\n"
+            f"3️⃣ Envoyez une capture d'écran de votre paiement (Wave, Orange Money, PayPal, BNB, etc.).\n"
+            f"4️⃣ Le bot analyse automatiquement le montant et calcule votre durée d'accès.\n"
+            f"5️⃣ Choisissez le canal souhaité — votre accès est activé immédiatement.\n\n"
+            f"🎁 **Demander un accès bonus (gratuit)**\n"
+            f"▪️ Tapez /bonus dans ce bot et suivez les instructions.\n"
+            f"▪️ La demande est soumise à l'approbation de l'administrateur.\n\n"
+            f"💬 **Besoin d'aide ?**\n"
+            f"Appuyez sur 💬 **Assistance** dans le menu /start pour discuter avec notre assistante.\n"
+            f"❓ Si vous ne comprenez pas quelque chose, écrivez directement à @Kouam2025_bot — elle vous guidera étape par étape.\n\n"
+            f"💳 Pour renouveler ou toute question : @Kouam2025_bot"
+        )
 
         # Vérifier si c'est un membre payant (déjà enregistré via paiement)
         if uid in ch.get("members", {}):
-            # Membre payant — notifier l'admin avec bouton Confirmer pour révoquer le lien
-            key = (cid, uid)
-            invite_link = pending_invites.get(key, "")
             member_info = ch["members"][uid]
             expires_at = member_info.get("expires_at", 0)
             dur_sec = member_info.get("duration_seconds", 0)
             dur_label = format_duration_label(dur_sec)
             expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M') if expires_at else "?"
+
+            try:
+                await context.bot.send_message(
+                    int(uid),
+                    f"🎉 **Bienvenue dans {ch['name']}!**\n\n"
+                    f"✅ Votre accès est actif.\n"
+                    f"⏱ Durée: **{dur_label}**\n"
+                    f"📅 Expire le: **{expire_str}**\n\n"
+                    f"⚠️ Votre accès sera automatiquement retiré à expiration.\n\n"
+                    + mode_emploi,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Erreur envoi message d'accueil à {uid}: {e}")
+
+            # Notifier l'admin avec bouton Confirmer pour révoquer le lien
+            key = (cid, uid)
+            invite_link = pending_invites.get(key, "")
 
             confirm_kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Confirmer l'intégration", callback_data=f"cjoin_{uid}_{cid}")
@@ -1290,8 +695,19 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     logger.error(f"Erreur notif admin {admin_id}: {e}")
         else:
-            # Membre inconnu — demander à l'admin combien de temps accorder
-            default_hours = ch.get("default_duration_hours", 24)
+            # Membre inconnu — envoyer le message d'accueil puis notifier l'admin
+            try:
+                await context.bot.send_message(
+                    int(uid),
+                    f"🎉 **Bienvenue dans {ch['name']}!**\n\n"
+                    f"✅ Vous avez bien rejoint le canal.\n\n"
+                    + mode_emploi,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Erreur envoi message d'accueil à {uid}: {e}")
+
+            default_hours = ch.get("default_duration_seconds", 86400)
             for admin_id in ADMINS:
                 try:
                     await context.bot.send_message(
@@ -1326,808 +742,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split("_")
     action = parts[0]
 
-    # ── Sélection du fournisseur IA (admin uniquement) ──────────────────
-    if action == "aikey":
-        user = update.effective_user
-        if not is_admin(user.id):
-            await query.answer("❌ Accès refusé.", show_alert=True)
-            return
-        provider_code = "_".join(parts[1:]) if len(parts) > 1 else ""
-        if provider_code == "cancel":
-            ai_key_input_state.pop(user.id, None)
-            await query.edit_message_text("❌ Opération annulée.")
-            return
-        provider_info = next((p for p in AI_PROVIDERS if p["code"] == provider_code), None)
-        if not provider_info:
-            await query.edit_message_text("❌ Fournisseur inconnu.")
-            return
-        ai_key_input_state[user.id] = {"provider": provider_code}
-        pattern = _KEY_PATTERNS.get(provider_code, {})
-        hint = pattern.get("hint", "clé API valide")
-        await query.edit_message_text(
-            f"🔑 **{provider_info['name']}**\n\n"
-            f"Saisissez votre clé API dans le chat.\n\n"
-            f"📋 Format attendu : clé qui {hint}\n\n"
-            f"⚠️ La clé sera vérifiée automatiquement avant d'être enregistrée.\n"
-            f"Tapez /annuler pour annuler.",
-            parse_mode="Markdown"
-        )
-        return
-
-    # ── Menu administrateur (boutons groupés) ───────────────────────────
-    if action == "adm":
-        user = update.effective_user
-        if not is_admin(user.id):
-            await query.answer("❌ Accès refusé.", show_alert=True)
-            return
-
-        sub = "_".join(parts[1:]) if len(parts) > 1 else ""
-        back_btn = [[InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")]]
-
-        if sub == "noop":
-            return
-
-        elif sub == "menu":
-            data = load_data()
-            ai_toggle = data.get("ai_enabled", True)
-            await query.edit_message_text(
-                _admin_menu_text(ai_toggle),
-                reply_markup=_admin_menu_keyboard(ai_toggle),
-                parse_mode="Markdown"
-            )
-
-        elif sub == "channels":
-            data = load_data()
-            channels = data.get("channels", {})
-            if not channels:
-                text = "📢 *Canaux gérés*\n\nAucun canal géré pour l'instant."
-            else:
-                lines = ["📢 *Canaux gérés:*\n"]
-                for cid, ch in channels.items():
-                    nb = len(ch.get("members", {}))
-                    dur = ch.get("default_duration_hours", 24)
-                    lines.append(f"• *{ch.get('name', 'Sans nom')}*\n  ID: `{cid}`\n  👥 {nb} membre(s) | ⏱ Défaut: {dur}h")
-                text = "\n".join(lines)
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
-
-        elif sub == "members":
-            await query.edit_message_text(
-                "👥 *Voir les membres d'un canal*\n\n"
-                "Tapez la commande dans le chat :\n"
-                "`/members <id_canal>`\n\n"
-                "Exemple :\n`/members -1001234567890`",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "extend":
-            await query.edit_message_text(
-                "⏫ *Rallonger l'accès d'un membre*\n\n"
-                "Tapez la commande dans le chat :\n"
-                "`/extend <id_canal> <id_user> <heures>`\n\n"
-                "Exemple :\n`/extend -1001234567890 987654321 24`",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "grant":
-            await query.edit_message_text(
-                "✅ *Accorder l'accès à un membre*\n\n"
-                "Tapez la commande dans le chat :\n"
-                "`/grant <id_canal> <id_user> <heures>`\n\n"
-                "Exemple :\n`/grant -1001234567890 987654321 48`",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "remove":
-            await query.edit_message_text(
-                "❌ *Retirer un membre d'un canal*\n\n"
-                "Tapez la commande dans le chat :\n"
-                "`/remove <id_canal> <id_user>`\n\n"
-                "Exemple :\n`/remove -1001234567890 987654321`",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "unblock":
-            await query.edit_message_text(
-                "🔓 *Débloquer un membre*\n\n"
-                "Tapez la commande dans le chat :\n"
-                "`/unblock <id_canal> <id_user>`\n\n"
-                "Exemple :\n`/unblock -1001234567890 987654321`",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "setduration":
-            await query.edit_message_text(
-                "⏱ *Changer la durée par défaut d'un canal*\n\n"
-                "Tapez la commande dans le chat :\n"
-                "`/setduration <id_canal> <heures>`\n\n"
-                "Exemple :\n`/setduration -1001234567890 24`",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "bonus":
-            await query.edit_message_text(
-                "🎁 *Accorder un accès gratuit (bonus)*\n\n"
-                "Tapez la commande dans le chat :\n"
-                "`/bonus`\n\n"
-                "Le bot vous guidera pour choisir le canal et l'utilisateur.",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "ai_on":
-            data = load_data()
-            data["ai_enabled"] = True
-            save_data(data)
-            status = "✅ opérationnel" if gemini_client else "⚠️ activé mais aucune clé configurée"
-            await query.edit_message_text(
-                f"🤖 *Assistant IA {status}!*\n\nIl répondra automatiquement aux utilisateurs.",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "ai_off":
-            data = load_data()
-            data["ai_enabled"] = False
-            save_data(data)
-            await query.edit_message_text(
-                "⭕ *Assistant IA désactivé.*\n\nLe bot ne répondra plus automatiquement.",
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "setaikey":
-            hints = {
-                "gemini":   "Format: `AIza...`",
-                "openai":   "Format: `sk-...`",
-                "deepseek": "Format: `sk-...`",
-                "groq":     "Format: `gsk_...`",
-            }
-            keyboard = []
-            for i, p in enumerate(AI_PROVIDERS, start=1):
-                keyboard.append([InlineKeyboardButton(f"{i}. {p['name']}", callback_data=f"aikey_{p['code']}")])
-            keyboard.append([InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")])
-            lines = ["🤖 *Configurer une clé API IA*\n", "Choisissez le fournisseur :"]
-            for i, p in enumerate(AI_PROVIDERS, start=1):
-                h = hints.get(p["code"], "")
-                lines.append(f"{i}. *{p['name']}* — {h}")
-            await query.edit_message_text(
-                "\n".join(lines),
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
-            )
-
-        elif sub == "listaikeys":
-            all_keys = _load_ai_keys()
-            lines = ["🔑 *Clés API IA configurées:*\n"]
-            found_any = False
-            for p in AI_PROVIDERS:
-                pcode = p["code"]
-                keys = all_keys.get(pcode, [])
-                if not keys:
-                    lines.append(f"*{p['name']}:* _aucune clé_")
-                    continue
-                found_any = True
-                for idx, key in enumerate(keys):
-                    masked = key[:6] + "…" + key[-4:] if len(key) > 12 else "***"
-                    if _is_quota_ok(pcode, idx):
-                        status = "✅ actif"
-                    else:
-                        ts = ai_quota_exhausted.get((pcode, idx), 0)
-                        remaining = max(0, int(QUOTA_RESET_SECONDS - (datetime.now().timestamp() - ts)))
-                        status = f"⚠️ épuisé (~{remaining//60}min)"
-                    lines.append(f"*{p['name']} [{idx+1}]:* `{masked}` — {status}")
-            if not found_any:
-                lines.append("\n_Utilisez 🔑 Config clé IA pour ajouter des clés._")
-            await query.edit_message_text(
-                "\n".join(lines),
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "checkquota":
-            await query.edit_message_text(
-                "🔄 *Vérification du quota de toutes les clés…*\n\nMerci de patienter.",
-                parse_mode="Markdown"
-            )
-            all_keys = _load_ai_keys()
-            results = []
-            for p in AI_PROVIDERS:
-                pcode = p["code"]
-                keys = all_keys.get(pcode, [])
-                if not keys:
-                    results.append(f"\n*{p['name']}:* _aucune clé_")
-                    continue
-                for idx, key in enumerate(keys):
-                    masked = key[:6] + "…" + key[-4:] if len(key) > 12 else "***"
-                    results.append(f"\n🔑 *{p['name']} [{idx+1}]* (`{masked}`) :")
-                    ok, status_text = await _test_ai_key(pcode, key)
-                    for line in status_text.split("\n"):
-                        if line.strip():
-                            results.append(f"  {line}")
-            full_msg = "📊 *Rapport de quota IA*\n" + "\n".join(results)
-            if len(full_msg) > 4000:
-                full_msg = full_msg[:3990] + "\n_(tronqué)_"
-            await query.edit_message_text(
-                full_msg,
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        elif sub == "admins":
-            data = load_data()
-            extra = data.get("extra_admins", [])
-            lines = ["👑 *Gestion des administrateurs*\n"]
-            lines.append("*Super-admins (fixes):*")
-            for aid in ADMINS:
-                lines.append(f"• `{aid}`")
-            if extra:
-                lines.append("\n*Admins dynamiques:*")
-                for aid in extra:
-                    lines.append(f"• `{aid}`")
-            else:
-                lines.append("\n_Aucun admin dynamique._")
-            adm_kb = []
-            if user.id in ADMINS:
-                adm_kb.append([
-                    InlineKeyboardButton("➕ Ajouter admin", callback_data="fl_aa"),
-                    InlineKeyboardButton("❌ Retirer admin", callback_data="fl_ra"),
-                ])
-            adm_kb.extend(back_btn)
-            await query.edit_message_text(
-                "\n".join(lines),
-                reply_markup=InlineKeyboardMarkup(adm_kb), parse_mode="Markdown"
-            )
-
-        elif sub == "help":
-            text = (
-                "📖 *Aide — Commandes Admin*\n\n"
-                "*Canaux:*\n"
-                "• `/channels` — Liste des canaux\n"
-                "• `/members <id_canal>` — Membres + temps\n"
-                "• `/remove <id_canal> <id_user>` — Retirer\n\n"
-                "*Durées:*\n"
-                "• Boutons: *24h / 48h / 72h / Défaut* (nouveau membre)\n"
-                "• `/grant <id_canal> <id_user> <h>` — Accorder\n"
-                "• `/extend <id_canal> <id_user> <h>` — Rallonger\n"
-                "• `/setduration <id_canal> <h>` — Défaut\n"
-                "• `/unblock <id_canal> <id_user>` — Débloquer\n\n"
-                "*Administrateurs:*\n"
-                "• `/addadmin <id>` — Ajouter un admin\n"
-                "• `/removeadmin <id>` — Retirer un admin\n"
-                "• `/listadmins` — Voir tous les admins\n\n"
-                "*IA:*\n"
-                "• `/ai_on` / `/ai_off` — Activer/désactiver\n"
-                "• `/setaikey` — Config clé API\n"
-                "• `/checkquota` — Vérif. quota\n\n"
-                "*Telethon:*\n"
-                "• `/connect` — Connecter compte\n"
-                "• `/telethon` — Statut\n"
-                "• `/scan <id_canal>` — Rescanner\n"
-                "• `/disconnect` — Déconnecter"
-            )
-            await query.edit_message_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
-            )
-
-        return
-
-    # ── Flux interactifs admin (navigation boutons sans commandes) ───────
-    if action == "fl":
-        user = update.effective_user
-        if not is_admin(user.id):
-            await query.answer("❌ Accès refusé.", show_alert=True)
-            return
-
-        sub = parts[1] if len(parts) > 1 else ""
-        params = parts[2:]
-        data = load_data()
-        channels = data.get("channels", {})
-        back_menu = [[InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")]]
-
-        def _channel_kbd(action_code: str):
-            rows = []
-            for cid, ch in channels.items():
-                rows.append([InlineKeyboardButton(
-                    f"📢 {ch.get('name', cid)}",
-                    callback_data=f"fl_{action_code}_{cid}"
-                )])
-            if not rows:
-                return None
-            rows.extend(back_menu)
-            return InlineKeyboardMarkup(rows)
-
-        def _member_kbd(action_code: str, cid: str, members: dict):
-            rows = []
-            ct = int(datetime.now().timestamp())
-            for uid, info in list(members.items())[:50]:
-                exp = info.get("expires_at", 0)
-                rem = format_time_remaining(exp - ct) if exp > ct else "Expiré"
-                rows.append([InlineKeyboardButton(
-                    f"👤 {uid} — {rem}",
-                    callback_data=f"fl_{action_code}_{cid}_{uid}"
-                )])
-            rows.append([InlineKeyboardButton("🔙 Canaux", callback_data=f"fl_{action_code}")])
-            rows.extend(back_menu)
-            return InlineKeyboardMarkup(rows)
-
-        def _duration_kbd(action_code: str, cid: str, uid: str):
-            return InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏱ 24h", callback_data=f"fl_{action_code}_{cid}_{uid}_24"),
-                 InlineKeyboardButton("⏱ 48h", callback_data=f"fl_{action_code}_{cid}_{uid}_48"),
-                 InlineKeyboardButton("⏱ 72h", callback_data=f"fl_{action_code}_{cid}_{uid}_72")],
-                [InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")],
-            ])
-
-        async def _grant_execute(cid, uid, hours, action_label="accordé", bonus=False):
-            ch = channels.get(cid, {})
-            ct = int(datetime.now().timestamp())
-            ds = hours * 3600
-            exp = ct + ds
-            ch.setdefault("members", {})[uid] = {
-                "expires_at": exp, "granted_at": ct, "duration_seconds": ds
-            }
-            if bonus:
-                ch["members"][uid]["bonus"] = True
-            ch.setdefault("blocked", {}).pop(uid, None)
-            save_data(data)
-            dur_lbl = format_duration_label(ds)
-            exp_str = datetime.fromtimestamp(exp).strftime('%d/%m/%Y à %H:%M')
-            try:
-                await context.bot.unban_chat_member(int(cid), int(uid))
-            except Exception:
-                pass
-            invite_link = None
-            try:
-                inv = await context.bot.create_chat_invite_link(int(cid), member_limit=1)
-                invite_link = inv.invite_link
-                pending_invites[(cid, uid)] = invite_link
-            except Exception as e:
-                logger.warning(f"Lien invitation (fl): {e}")
-            try:
-                icon = "🎁" if bonus else "✅"
-                verb = "un accès gratuit" if bonus else "votre accès"
-                if invite_link:
-                    msg = (f"{icon} *Accès {action_label}!*\n\n"
-                           f"📢 Canal: *{ch.get('name', cid)}*\n"
-                           f"⏱ Durée: *{dur_lbl}*\n"
-                           f"📅 Expire le: {exp_str}\n\n"
-                           f"👇 *Cliquez ici pour rejoindre :*\n{invite_link}\n\n"
-                           f"⚠️ Lien à usage unique — ne pas partager.")
-                else:
-                    msg = (f"{icon} *Accès {action_label}!*\n\n"
-                           f"📢 Canal: *{ch.get('name', cid)}*\n"
-                           f"⏱ Durée: *{dur_lbl}*\n"
-                           f"📅 Expire le: {exp_str}")
-                await context.bot.send_message(int(uid), msg, parse_mode="Markdown")
-            except Exception:
-                pass
-            return dur_lbl, exp_str, invite_link
-
-        # ── Voir les membres ─────────────────────────────────────────
-        if sub == "ms":
-            if not params:
-                kb = _channel_kbd("ms")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text("👥 *Voir les membres — Choisissez un canal :*", reply_markup=kb, parse_mode="Markdown")
-            else:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                members = ch.get("members", {})
-                ct = int(datetime.now().timestamp())
-                if not members:
-                    txt = f"📢 *{ch.get('name', cid)}*\n\n_Aucun membre actif._"
-                else:
-                    lines = [f"📢 *{ch.get('name', cid)}* — {len(members)} membre(s):\n"]
-                    for uid, info in members.items():
-                        exp = info.get("expires_at", 0)
-                        rem = format_time_remaining(exp - ct)
-                        lines.append(f"• `{uid}` — ⏱ {rem}")
-                    txt = "\n".join(lines)
-                await query.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Canaux", callback_data="fl_ms")],
-                    *back_menu
-                ]), parse_mode="Markdown")
-
-        # ── Accorder accès ───────────────────────────────────────────
-        elif sub == "gr":
-            if not params:
-                kb = _channel_kbd("gr")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text("✅ *Accorder accès — Choisissez un canal :*", reply_markup=kb, parse_mode="Markdown")
-            elif len(params) == 1:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                admin_flow_state[user.id] = {"action": "grant", "step": "enter_uid", "cid": cid, "ch_name": ch.get("name", cid)}
-                await query.edit_message_text(
-                    f"✅ *Accorder accès — {ch.get('name', cid)}*\n\n"
-                    f"Envoyez l'*ID Telegram* de l'utilisateur dans le chat.\n\n"
-                    f"_(Tapez /annuler pour annuler)_",
-                    parse_mode="Markdown"
-                )
-            elif len(params) == 2:
-                cid, uid = params[0], params[1]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text(
-                    f"✅ *Accorder accès — {ch.get('name', cid)}*\n\n👤 Utilisateur: `{uid}`\n\nChoisissez la durée :",
-                    reply_markup=_duration_kbd("gr", cid, uid), parse_mode="Markdown"
-                )
-            elif len(params) >= 3:
-                cid, uid, h_str = params[0], params[1], params[2]
-                hours = int(h_str)
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                dur_lbl, exp_str, inv = await _grant_execute(cid, uid, hours)
-                await query.edit_message_text(
-                    f"✅ *Accès accordé avec succès!*\n\n"
-                    f"📢 Canal: *{ch.get('name', cid)}*\n"
-                    f"👤 Utilisateur: `{uid}`\n"
-                    f"⏱ Durée: *{dur_lbl}*\n"
-                    f"📅 Expire: {exp_str}\n"
-                    f"🔗 Lien envoyé: {'✅' if inv else '❌'}",
-                    reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                )
-
-        # ── Rallonger l'accès ────────────────────────────────────────
-        elif sub == "ex":
-            if not params:
-                kb = _channel_kbd("ex")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text("⏫ *Rallonger — Choisissez un canal :*", reply_markup=kb, parse_mode="Markdown")
-            elif len(params) == 1:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                members = ch.get("members", {})
-                if not members:
-                    await query.edit_message_text(
-                        f"📢 *{ch.get('name', cid)}*\n\n_Aucun membre actif._",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Canaux", callback_data="fl_ex")], *back_menu]), parse_mode="Markdown"
-                    )
-                    return
-                await query.edit_message_text(
-                    f"⏫ *Rallonger — {ch.get('name', cid)}*\n\nChoisissez un membre :",
-                    reply_markup=_member_kbd("ex", cid, members), parse_mode="Markdown"
-                )
-            elif len(params) == 2:
-                cid, uid = params[0], params[1]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                ct = int(datetime.now().timestamp())
-                exp = ch.get("members", {}).get(uid, {}).get("expires_at", 0)
-                rem = format_time_remaining(exp - ct) if exp > ct else "Expiré"
-                await query.edit_message_text(
-                    f"⏫ *Rallonger — {ch.get('name', cid)}*\n\n👤 Utilisateur: `{uid}`\n⏳ Temps restant: {rem}\n\nAjoutez combien de temps ?",
-                    reply_markup=_duration_kbd("ex", cid, uid), parse_mode="Markdown"
-                )
-            elif len(params) >= 3:
-                cid, uid, h_str = params[0], params[1], params[2]
-                hours = int(h_str)
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                ct = int(datetime.now().timestamp())
-                member = ch.get("members", {}).get(uid, {})
-                cur_exp = member.get("expires_at", ct)
-                new_exp = max(cur_exp, ct) + hours * 3600
-                if uid in ch.get("members", {}):
-                    ch["members"][uid]["expires_at"] = new_exp
-                save_data(data)
-                exp_str = datetime.fromtimestamp(new_exp).strftime('%d/%m/%Y à %H:%M')
-                try:
-                    await context.bot.send_message(
-                        int(uid),
-                        f"✅ *Votre accès a été rallongé!*\n\n📢 Canal: *{ch.get('name', cid)}*\n➕ Ajout: *{hours}h*\n📅 Nouvelle expiration: {exp_str}",
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
-                await query.edit_message_text(
-                    f"✅ *Accès rallongé!*\n\n📢 Canal: *{ch.get('name', cid)}*\n👤 Utilisateur: `{uid}`\n➕ Ajout: *{hours}h*\n📅 Nouvelle expiration: {exp_str}",
-                    reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                )
-
-        # ── Retirer un membre ────────────────────────────────────────
-        elif sub == "rm":
-            if not params:
-                kb = _channel_kbd("rm")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text("❌ *Retirer membre — Choisissez un canal :*", reply_markup=kb, parse_mode="Markdown")
-            elif len(params) == 1:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                members = ch.get("members", {})
-                if not members:
-                    await query.edit_message_text(
-                        f"📢 *{ch.get('name', cid)}*\n\n_Aucun membre actif._",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Canaux", callback_data="fl_rm")], *back_menu]), parse_mode="Markdown"
-                    )
-                    return
-                await query.edit_message_text(
-                    f"❌ *Retirer — {ch.get('name', cid)}*\n\nChoisissez un membre :",
-                    reply_markup=_member_kbd("rm", cid, members), parse_mode="Markdown"
-                )
-            elif len(params) == 2:
-                cid, uid = params[0], params[1]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                try:
-                    await context.bot.ban_chat_member(int(cid), int(uid))
-                    await context.bot.unban_chat_member(int(cid), int(uid))
-                except Exception as e:
-                    logger.warning(f"Retrait {uid}: {e}")
-                ch.get("members", {}).pop(uid, None)
-                save_data(data)
-                try:
-                    await context.bot.send_message(int(uid), f"⚠️ Vous avez été retiré du canal *{ch.get('name', cid)}*.", parse_mode="Markdown")
-                except Exception:
-                    pass
-                await query.edit_message_text(
-                    f"✅ *Membre retiré!*\n\n📢 Canal: *{ch.get('name', cid)}*\n👤 Utilisateur: `{uid}`",
-                    reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                )
-
-        # ── Débloquer ────────────────────────────────────────────────
-        elif sub == "ub":
-            if not params:
-                kb = _channel_kbd("ub")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text("🔓 *Débloquer — Choisissez un canal :*", reply_markup=kb, parse_mode="Markdown")
-            elif len(params) == 1:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                blocked = ch.get("blocked", {})
-                if not blocked:
-                    await query.edit_message_text(
-                        f"📢 *{ch.get('name', cid)}*\n\n_Aucun utilisateur bloqué._",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Canaux", callback_data="fl_ub")], *back_menu]), parse_mode="Markdown"
-                    )
-                    return
-                rows = []
-                for uid in list(blocked.keys())[:50]:
-                    rows.append([InlineKeyboardButton(f"🚫 {uid}", callback_data=f"fl_ub_{cid}_{uid}")])
-                rows.append([InlineKeyboardButton("🔙 Canaux", callback_data="fl_ub")])
-                rows.extend(back_menu)
-                await query.edit_message_text(
-                    f"🔓 *Débloquer — {ch.get('name', cid)}*\n\nChoisissez un utilisateur :",
-                    reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
-                )
-            elif len(params) == 2:
-                cid, uid = params[0], params[1]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                try:
-                    await context.bot.unban_chat_member(int(cid), int(uid))
-                except Exception as e:
-                    logger.warning(f"Unban {uid}: {e}")
-                ch.get("blocked", {}).pop(uid, None)
-                save_data(data)
-                await query.edit_message_text(
-                    f"✅ *Utilisateur débloqué!*\n\n📢 Canal: *{ch.get('name', cid)}*\n👤 ID: `{uid}`",
-                    reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                )
-
-        # ── Durée par défaut ─────────────────────────────────────────
-        elif sub == "sd":
-            if not params:
-                kb = _channel_kbd("sd")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text("⏱ *Durée défaut — Choisissez un canal :*", reply_markup=kb, parse_mode="Markdown")
-            elif len(params) == 1:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                cur = ch.get("default_duration_hours", 24)
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⏱ 24h",      callback_data=f"fl_sd_{cid}_24"),
-                     InlineKeyboardButton("⏱ 48h",      callback_data=f"fl_sd_{cid}_48"),
-                     InlineKeyboardButton("⏱ 72h",      callback_data=f"fl_sd_{cid}_72")],
-                    [InlineKeyboardButton("⏱ 1 semaine", callback_data=f"fl_sd_{cid}_168"),
-                     InlineKeyboardButton("⏱ 1 mois",   callback_data=f"fl_sd_{cid}_720")],
-                    [InlineKeyboardButton("🔙 Canaux", callback_data="fl_sd"), InlineKeyboardButton("🔙 Menu", callback_data="adm_menu")],
-                ])
-                await query.edit_message_text(
-                    f"⏱ *Durée défaut — {ch.get('name', cid)}*\n\nDurée actuelle: *{cur}h*\n\nChoisissez la nouvelle durée :",
-                    reply_markup=kb, parse_mode="Markdown"
-                )
-            elif len(params) == 2:
-                cid, h_str = params[0], params[1]
-                hours = int(h_str)
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                ch["default_duration_hours"] = hours
-                save_data(data)
-                await query.edit_message_text(
-                    f"✅ *Durée par défaut mise à jour!*\n\n📢 Canal: *{ch.get('name', cid)}*\n⏱ Nouvelle durée: *{hours}h*",
-                    reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                )
-
-        # ── Bonus gratuit ────────────────────────────────────────────
-        elif sub == "bn":
-            if not params:
-                kb = _channel_kbd("bn")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text("🎁 *Bonus gratuit — Choisissez un canal :*", reply_markup=kb, parse_mode="Markdown")
-            elif len(params) == 1:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                admin_flow_state[user.id] = {"action": "bonus", "step": "enter_uid", "cid": cid, "ch_name": ch.get("name", cid)}
-                await query.edit_message_text(
-                    f"🎁 *Bonus — {ch.get('name', cid)}*\n\n"
-                    f"Envoyez l'*ID Telegram* de l'utilisateur dans le chat.\n\n"
-                    f"_(Tapez /annuler pour annuler)_",
-                    parse_mode="Markdown"
-                )
-            elif len(params) == 2:
-                cid, uid = params[0], params[1]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text(
-                    f"🎁 *Bonus — {ch.get('name', cid)}*\n\n👤 Utilisateur: `{uid}`\n\nChoisissez la durée :",
-                    reply_markup=_duration_kbd("bn", cid, uid), parse_mode="Markdown"
-                )
-            elif len(params) >= 3:
-                cid, uid, h_str = params[0], params[1], params[2]
-                hours = int(h_str)
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                dur_lbl, exp_str, inv = await _grant_execute(cid, uid, hours, action_label="accordé (bonus)", bonus=True)
-                # Marquer le bonus comme utilisé pour cet utilisateur
-                data2 = load_data()
-                bu = data2.setdefault("bonus_used", [])
-                if uid not in [str(x) for x in bu]:
-                    bu.append(int(uid))
-                    save_data(data2)
-                await query.edit_message_text(
-                    f"🎁 *Bonus accordé!*\n\n📢 Canal: *{ch.get('name', cid)}*\n👤 Utilisateur: `{uid}`\n⏱ Durée: *{dur_lbl}*\n📅 Expire: {exp_str}\n🔗 Lien envoyé: {'✅' if inv else '❌'}",
-                    reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                )
-
-        # ── Mode d'emploi ─────────────────────────────────────────────
-        elif sub == "me":
-            if not params:
-                # Afficher la liste des canaux
-                kb = _channel_kbd("me")
-                if not kb:
-                    await query.edit_message_text("📢 Aucun canal géré.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                await query.edit_message_text(
-                    "📖 *Mode d'emploi — Choisissez un canal :*\n\n"
-                    "_Sélectionnez le canal pour voir ou modifier son mode d'emploi._",
-                    reply_markup=kb, parse_mode="Markdown"
-                )
-            else:
-                cid = params[0]
-                ch = channels.get(cid)
-                if not ch:
-                    await query.edit_message_text("❌ Canal introuvable.", reply_markup=InlineKeyboardMarkup(back_menu))
-                    return
-                current_mode = ch.get("mode_emploi", "")
-                if len(params) == 1:
-                    # Afficher le mode d'emploi actuel + bouton modifier
-                    preview = f"📄 *Contenu actuel :*\n\n_{current_mode[:600]}{'...' if len(current_mode) > 600 else ''}_" if current_mode else "_Aucun mode d'emploi configuré pour ce canal._"
-                    await query.edit_message_text(
-                        f"📖 *Mode d'emploi — {ch.get('name', cid)}*\n\n"
-                        f"{preview}\n\n"
-                        f"Appuyez sur **Modifier** pour définir ou mettre à jour le guide.",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("✏️ Modifier le mode d'emploi", callback_data=f"fl_me_{cid}_edit")],
-                            [InlineKeyboardButton("🔙 Canaux", callback_data="fl_me")],
-                            *back_menu
-                        ]),
-                        parse_mode="Markdown"
-                    )
-                elif len(params) >= 2 and params[1] == "edit":
-                    # Lancer la saisie du mode d'emploi
-                    admin_flow_state[user.id] = {"action": "setmode", "step": "enter_text", "cid": cid, "ch_name": ch.get("name", cid)}
-                    await query.edit_message_text(
-                        f"✏️ *Modifier le mode d'emploi — {ch.get('name', cid)}*\n\n"
-                        f"Envoyez dans le chat le texte complet du mode d'emploi.\n\n"
-                        f"Ce guide sera :\n"
-                        f"• 📩 Envoyé automatiquement aux nouveaux membres\n"
-                        f"• 🤖 Utilisé par l'assistante pour répondre aux questions\n\n"
-                        f"⚠️ _N'incluez aucune stratégie interne — uniquement les instructions destinées aux membres._\n\n"
-                        f"_(Tapez /annuler pour annuler)_",
-                        parse_mode="Markdown"
-                    )
-
-        # ── Ajouter admin ────────────────────────────────────────────
-        elif sub == "aa":
-            if user.id not in ADMINS:
-                await query.answer("❌ Super-admins uniquement.", show_alert=True)
-                return
-            admin_flow_state[user.id] = {"action": "addadmin", "step": "enter_id"}
-            await query.edit_message_text(
-                "👑 *Ajouter un administrateur*\n\n"
-                "Envoyez l'*ID Telegram* de la personne à promouvoir.\n\n"
-                "_(Tapez /annuler pour annuler)_",
-                parse_mode="Markdown"
-            )
-
-        # ── Retirer admin ────────────────────────────────────────────
-        elif sub == "ra":
-            if user.id not in ADMINS:
-                await query.answer("❌ Super-admins uniquement.", show_alert=True)
-                return
-            extra_list = list(extra_admins)
-            if not params:
-                if not extra_list:
-                    await query.edit_message_text(
-                        "👑 *Admins dynamiques*\n\n_Aucun admin à retirer._",
-                        reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                    )
-                    return
-                rows = [[InlineKeyboardButton(f"❌ Retirer {aid}", callback_data=f"fl_ra_{aid}")] for aid in extra_list]
-                rows.extend(back_menu)
-                await query.edit_message_text(
-                    "👑 *Retirer un admin — Choisissez :*",
-                    reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
-                )
-            elif len(params) == 1:
-                target_id = int(params[0])
-                if target_id in ADMINS:
-                    await query.answer("❌ Impossible de retirer un super-admin.", show_alert=True)
-                    return
-                extra_admins.discard(target_id)
-                d2 = load_data()
-                lst = d2.get("extra_admins", [])
-                if target_id in lst:
-                    lst.remove(target_id)
-                d2["extra_admins"] = lst
-                save_data(d2)
-                await query.edit_message_text(
-                    f"✅ *Admin retiré.*\n\n🆔 ID: `{target_id}`",
-                    reply_markup=InlineKeyboardMarkup(back_menu), parse_mode="Markdown"
-                )
-
-        return
-
     # Accessible à tous les utilisateurs
     if query.data == "assist_start":
         user = update.effective_user
@@ -2161,6 +775,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Afficher le menu principal
         user_keyboard = [
+            [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
             [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
             [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
             [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
@@ -2169,6 +784,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.id,
             f"🏠 **Menu principal**\n\n"
             f"Que souhaitez-vous faire ?\n\n"
+            f"• 📊 Vérifier votre **durée restante** d'accès\n"
             f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
             f"• 🎁 Demander un accès gratuit (bonus)\n"
             f"• 💬 Contacter l'assistance",
@@ -2178,6 +794,65 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── Callbacks accessibles à tous les utilisateurs ─────────────────
+    if query.data == "my_status":
+        user = update.effective_user
+        uid_str = str(user.id)
+        data = load_data()
+        channels = data.get("channels", {})
+        current_time = int(datetime.now().timestamp())
+        found = False
+        lines = [f"📊 **Statut de vos abonnements**\n👤 {user.first_name}\n"]
+
+        for cid, ch in channels.items():
+            members = ch.get("members", {})
+            if uid_str in members:
+                m = members[uid_str]
+                expires_at = m.get("expires_at", 0)
+                time_left = expires_at - current_time
+                dur_total = format_duration_label(m.get("duration_seconds", 0))
+                expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M') if expires_at else "?"
+                if time_left > 0:
+                    remaining = format_time_remaining(time_left)
+                    lines.append(
+                        f"📢 **{ch.get('name', cid)}**\n"
+                        f"   ✅ Accès **ACTIF**\n"
+                        f"   ⏳ Temps restant: **{remaining}**\n"
+                        f"   📅 Expire le: {expire_str}\n"
+                        f"   ⏱ Durée totale: {dur_total}\n"
+                    )
+                else:
+                    lines.append(
+                        f"📢 **{ch.get('name', cid)}**\n"
+                        f"   🔴 Accès **EXPIRÉ** depuis le {expire_str}\n"
+                    )
+                found = True
+
+        if not found:
+            lines.append("ℹ️ Vous n'avez aucun abonnement enregistré.\n\nAppuyez sur 💳 *Payer mon abonnement* pour souscrire.")
+
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu principal", callback_data="back_main")]])
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=back_kb)
+        return
+
+    if query.data == "back_main":
+        user = update.effective_user
+        user_keyboard = [
+            [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
+            [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
+            [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
+            [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
+        ]
+        await query.edit_message_text(
+            f"🏠 **Menu principal**\n\n"
+            f"• 📊 Vérifier votre **durée restante** d'accès\n"
+            f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
+            f"• 🎁 Demander un accès gratuit (bonus)\n"
+            f"• 💬 Contacter l'assistance",
+            reply_markup=InlineKeyboardMarkup(user_keyboard),
+            parse_mode="Markdown"
+        )
+        return
+
     if query.data == "pay_start":
         user = update.effective_user
         data = load_data()
@@ -2247,103 +922,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not channels:
             await query.edit_message_text("ℹ️ Aucun canal disponible.")
             return
-
-        # ── Vérifier si le bonus a déjà été utilisé ──────────────────
-        bonus_used_set = set(str(x) for x in data.get("bonus_used", []))
-        if str(user.id) in bonus_used_set:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Payer un abonnement", callback_data="pay_start")],
-                [InlineKeyboardButton("✉️ Envoyer un message à l'admin", callback_data=f"bmsg_s_{user.id}")],
-                [InlineKeyboardButton("🏠 Menu principal", callback_data="home")],
-            ])
-            await query.edit_message_text(
-                "🚫 *Bonus déjà utilisé*\n\n"
-                "Vous avez déjà bénéficié de votre accès gratuit.\n\n"
-                "Pour continuer à accéder au canal, vous pouvez :\n"
-                "• 💳 Souscrire à un abonnement\n"
-                "• ✉️ Envoyer un message convaincant à l'administrateur\n\n"
-                "_Notez que l'administrateur n'accepte pas les demandes sans arguments solides._",
-                reply_markup=kb,
-                parse_mode="Markdown"
-            )
-            return
-
-        # ── Bonus disponible : choisir le canal ──────────────────────
         keyboard = []
         for cid, ch in channels.items():
             keyboard.append([InlineKeyboardButton(f"📢 {ch.get('name', cid)}", callback_data=f"bch_{user.id}_{cid}")])
         keyboard.append([InlineKeyboardButton("❌ Annuler", callback_data="home")])
         await query.edit_message_text(
-            "🎁 *Demande de bonus*\n\nPour quel canal souhaitez-vous demander un accès gratuit?\n\n"
+            "🎁 **Demande de bonus**\n\nPour quel canal souhaitez-vous demander un accès gratuit?\n\n"
             "_La demande sera envoyée à l'administrateur pour approbation._",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-        return
-
-    # ── Bonus épuisé → sélection canal pour message admin ───────────────
-    if action == "bmsg" and len(parts) >= 3 and parts[1] == "s":
-        requester_uid = int(parts[2])
-        if update.effective_user.id != requester_uid:
-            await query.answer("Ce bouton ne vous est pas destiné.", show_alert=True)
-            return
-        data = load_data()
-        channels = data.get("channels", {})
-        if not channels:
-            await query.edit_message_text("ℹ️ Aucun canal disponible.")
-            return
-        if len(channels) == 1:
-            cid = list(channels.keys())[0]
-            ch_name = channels[cid].get("name", cid)
-            bonus_msg_state[requester_uid] = {"cid": cid, "ch_name": ch_name, "step": "typing"}
-            await query.edit_message_text(
-                f"✉️ *Message à l'administrateur*\n\n"
-                f"📢 Canal: *{ch_name}*\n\n"
-                f"Rédigez ci-dessous votre message de demande d'accès.\n\n"
-                f"⚠️ *Conseils importants:*\n"
-                f"• Soyez *convaincant* et apportez des arguments solides\n"
-                f"• Expliquez *pourquoi* vous méritez cet accès\n"
-                f"• Ne dites *jamais* «je n'ai pas d'argent» — ce type de message est systématiquement ignoré\n"
-                f"• Sossou Kouamé n'approuve que les messages sérieux avec de vrais arguments\n\n"
-                f"_Tapez votre message maintenant:_",
-                parse_mode="Markdown"
-            )
-        else:
-            kb = []
-            for cid, ch in channels.items():
-                kb.append([InlineKeyboardButton(f"📢 {ch.get('name', cid)}", callback_data=f"bmsg_ch_{requester_uid}_{cid}")])
-            kb.append([InlineKeyboardButton("❌ Annuler", callback_data="home")])
-            await query.edit_message_text(
-                "✉️ *Message à l'admin — Choisissez le canal :*",
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode="Markdown"
-            )
-        return
-
-    # ── Bonus épuisé → canal sélectionné → demander le message ─────────
-    if action == "bmsg" and len(parts) >= 3 and parts[1] == "ch":
-        requester_uid = int(parts[2])
-        cid = "_".join(parts[3:])
-        if update.effective_user.id != requester_uid:
-            await query.answer("Ce bouton ne vous est pas destiné.", show_alert=True)
-            return
-        data = load_data()
-        channels = data.get("channels", {})
-        if cid not in channels:
-            await query.edit_message_text("❌ Canal introuvable.")
-            return
-        ch_name = channels[cid].get("name", cid)
-        bonus_msg_state[requester_uid] = {"cid": cid, "ch_name": ch_name, "step": "typing"}
-        await query.edit_message_text(
-            f"✉️ *Message à l'administrateur*\n\n"
-            f"📢 Canal: *{ch_name}*\n\n"
-            f"Rédigez ci-dessous votre message de demande d'accès.\n\n"
-            f"⚠️ *Conseils importants:*\n"
-            f"• Soyez *convaincant* et apportez des arguments solides\n"
-            f"• Expliquez *pourquoi* vous méritez cet accès\n"
-            f"• Ne dites *jamais* «je n'ai pas d'argent» — ce type de message est systématiquement ignoré\n"
-            f"• Sossou Kouamé n'approuve que les messages sérieux avec de vrais arguments\n\n"
-            f"_Tapez votre message maintenant:_",
             parse_mode="Markdown"
         )
         return
@@ -2374,13 +960,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Notifier les admins avec boutons d'approbation
-        approve_keyboard = []
-        for h_label, h_val in [("1 jour (24h)", 24), ("3 jours (72h)", 72),
-                                 ("7 jours (168h)", 168), ("1 mois (720h)", 720)]:
-            approve_keyboard.append([InlineKeyboardButton(
-                f"✅ {h_label}", callback_data=f"bapprove_{requester_uid}_{cid}_{h_val}"
-            )])
-        approve_keyboard.append([InlineKeyboardButton("❌ Refuser", callback_data=f"bdeny_{requester_uid}_{cid}")])
+        approve_keyboard = [
+            [
+                InlineKeyboardButton("✅ 30min", callback_data=f"bapprove_{requester_uid}_{cid}_1800"),
+                InlineKeyboardButton("✅ 1h",    callback_data=f"bapprove_{requester_uid}_{cid}_3600"),
+                InlineKeyboardButton("✅ 5h",    callback_data=f"bapprove_{requester_uid}_{cid}_18000"),
+            ],
+            [
+                InlineKeyboardButton("✅ 24h",   callback_data=f"bapprove_{requester_uid}_{cid}_86400"),
+                InlineKeyboardButton("✅ 48h",   callback_data=f"bapprove_{requester_uid}_{cid}_172800"),
+            ],
+            [
+                InlineKeyboardButton("✅ 7 jours", callback_data=f"bapprove_{requester_uid}_{cid}_604800"),
+                InlineKeyboardButton("✅ 1 mois",  callback_data=f"bapprove_{requester_uid}_{cid}_2592000"),
+            ],
+            [InlineKeyboardButton("❌ Refuser", callback_data=f"bdeny_{requester_uid}_{cid}")],
+        ]
 
         for admin_id in ADMINS:
             try:
@@ -2433,81 +1028,69 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         requester_uid = int(parts[1])
         cid = parts[2]
-        hours = int(parts[3])
+        duration_seconds = int(parts[3])
         data = load_data()
         if cid not in data.get("channels", {}):
             await query.edit_message_text("❌ Canal introuvable.")
             return
         ch = data["channels"][cid]
-        ch_name = ch.get("name", cid)
         current_time = int(datetime.now().timestamp())
-        duration_seconds = hours * 3600
         expires_at = current_time + duration_seconds
         ch.setdefault("members", {})[str(requester_uid)] = {
-            "expires_at": expires_at,
-            "granted_at": current_time,
-            "duration_seconds": duration_seconds,
-            "bonus": True
+            "expires_at": expires_at, "granted_at": current_time, "duration_seconds": duration_seconds
         }
         ch.setdefault("blocked", {}).pop(str(requester_uid), None)
-        # Marquer le bonus comme utilisé (1 seul bonus par utilisateur)
-        bu = data.setdefault("bonus_used", [])
-        if str(requester_uid) not in [str(x) for x in bu]:
-            bu.append(requester_uid)
         save_data(data)
         try:
-            await context.bot.unban_chat_member(int(cid), requester_uid)
+            await context.bot.unban_chat_member(int(cid), requester_uid, only_if_banned=True)
         except Exception:
             pass
         bonus_state.pop(requester_uid, None)
         dur_label = format_duration_label(duration_seconds)
         expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M')
-
-        # Générer le lien d'invitation à usage unique
-        invite_link = None
+        # Générer un lien d'invitation unique pour le bonus
+        bonus_invite_link = None
         try:
-            inv_obj = await context.bot.create_chat_invite_link(int(cid), member_limit=1)
-            invite_link = inv_obj.invite_link
-            pending_invites[(cid, str(requester_uid))] = invite_link
+            invite_obj = await context.bot.create_chat_invite_link(int(cid), member_limit=1)
+            bonus_invite_link = invite_obj.invite_link
+            pending_invites[(cid, str(requester_uid))] = bonus_invite_link
         except Exception as e:
-            logger.warning(f"Lien bonus ({cid}): {e}")
+            logger.warning(f"Impossible de créer le lien bonus pour {cid}: {e}")
 
-        # Envoyer la notification + lien à l'utilisateur
         try:
-            if invite_link:
+            if bonus_invite_link:
                 await context.bot.send_message(
                     requester_uid,
-                    f"🎁 *Accès bonus approuvé!*\n\n"
-                    f"📢 Canal: *{ch_name}*\n"
-                    f"⏱ Durée: *{dur_label}*\n"
+                    f"🎉 **Accès bonus approuvé!**\n\n"
+                    f"📢 Canal: **{ch['name']}**\n"
+                    f"⏱ Durée: **{dur_label}**\n"
                     f"📅 Expire le: {expire_str}\n\n"
-                    f"👇 *Cliquez ici pour rejoindre le canal:*\n{invite_link}\n\n"
-                    f"⚠️ Ce lien est à usage unique — ne le partagez pas.",
+                    f"👇 **Cliquez sur ce lien pour rejoindre le canal:**\n"
+                    f"{bonus_invite_link}\n\n"
+                    f"⚠️ Ce lien est à usage unique — ne le partagez pas.\n"
+                    f"⚠️ Votre accès sera automatiquement retiré à expiration.",
                     parse_mode="Markdown"
                 )
             else:
                 await context.bot.send_message(
                     requester_uid,
-                    f"🎁 *Accès bonus approuvé!*\n\n"
-                    f"📢 Canal: *{ch_name}*\n"
-                    f"⏱ Durée: *{dur_label}*\n"
+                    f"🎉 **Accès bonus approuvé!**\n\n"
+                    f"📢 Canal: **{ch['name']}**\n"
+                    f"⏱ Durée: **{dur_label}**\n"
                     f"📅 Expire le: {expire_str}\n\n"
-                    f"✅ Votre accès est activé.\n"
-                    f"_(Lien indisponible — contactez l'admin si nécessaire)_",
+                    f"✅ Vous pouvez maintenant rejoindre le canal.\n"
+                    f"⚠️ Votre accès sera automatiquement retiré à expiration.",
                     parse_mode="Markdown"
                 )
-        except Exception as e:
-            logger.warning(f"Envoi notif bonus user {requester_uid}: {e}")
-
+        except Exception:
+            pass
         admin_name = update.effective_user.first_name or "Admin"
-        link_status = "✅ Lien envoyé" if invite_link else "⚠️ Lien non généré"
         await query.edit_message_text(
-            f"🎁 *Bonus accordé par {admin_name}*\n\n"
+            f"✅ **Bonus accordé par {admin_name}**\n\n"
             f"🆔 Utilisateur: `{requester_uid}`\n"
-            f"📢 Canal: *{ch_name}*\n"
-            f"⏱ Durée: *{dur_label}*\n"
-            f"📅 Expire le: {expire_str}\n"
-            f"🔗 {link_status}",
+            f"📢 Canal: **{ch['name']}**\n"
+            f"⏱ Durée: **{dur_label}**\n"
+            f"📅 Expire le: {expire_str}",
             parse_mode="Markdown"
         )
         return
@@ -2558,17 +1141,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "setdef":
         cid = parts[1]
-        hours = int(parts[2])
+        duration_seconds = int(parts[2])
         data = load_data()
         if cid in data.get("channels", {}):
-            data["channels"][cid]["default_duration_hours"] = hours
+            data["channels"][cid]["default_duration_seconds"] = duration_seconds
             ch_name = data["channels"][cid].get("name", cid)
             save_data(data)
-            dur = f"{hours//24}j" if hours >= 24 else f"{hours}h"
+            dur_label = format_duration_label(duration_seconds)
             await query.edit_message_text(
                 f"✅ **Durée par défaut mise à jour!**\n\n"
                 f"📢 Canal: {ch_name}\n"
-                f"⏱ Durée: {dur}",
+                f"⏱ Durée: {dur_label}",
                 parse_mode="Markdown"
             )
         else:
@@ -2604,50 +1187,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M:%S')
 
         # Générer un lien d'invitation unique pour l'utilisateur
-        invite_link = None
-        try:
-            await context.bot.unban_chat_member(int(cid), int(uid))
-        except Exception:
-            pass
+        grant_invite_link = None
         try:
             invite_obj = await context.bot.create_chat_invite_link(int(cid), member_limit=1)
-            invite_link = invite_obj.invite_link
-            pending_invites[(cid, uid)] = invite_link
+            grant_invite_link = invite_obj.invite_link
+            pending_invites[(cid, uid)] = grant_invite_link
         except Exception as e:
-            logger.warning(f"Impossible de créer le lien d'invitation (grant) pour {cid}: {e}")
-            for admin_id in ADMINS:
-                try:
-                    await context.bot.send_message(
-                        admin_id,
-                        f"⚠️ *Lien d'invitation impossible pour* `{ch.get('name', cid)}`\n\n"
-                        f"Le bot n'est pas administrateur de ce canal.\n"
-                        f"👤 Utilisateur: `{uid}` doit recevoir son lien manuellement.\n\n"
-                        f"➡️ Ajoutez le bot comme admin dans le canal `{ch.get('name', cid)}` puis réessayez.",
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
+            logger.warning(f"Impossible de créer le lien pour {cid}: {e}")
 
         try:
-            if invite_link:
-                user_msg = (
+            if grant_invite_link:
+                await context.bot.send_message(
+                    int(uid),
                     f"✅ **Accès accordé!**\n\n"
                     f"📢 Canal: **{ch['name']}**\n"
                     f"⏱ Durée: **{dur_label}**\n"
                     f"📅 Expire le: {expire_str}\n\n"
-                    f"👇 **Cliquez sur ce lien pour rejoindre le canal :**\n"
-                    f"{invite_link}\n\n"
-                    f"⚠️ Ce lien est à usage unique — ne le partagez pas."
+                    f"👇 **Cliquez sur ce lien pour rejoindre le canal:**\n"
+                    f"{grant_invite_link}\n\n"
+                    f"⚠️ Ce lien est à usage unique — ne le partagez pas.\n"
+                    f"⚠️ Votre accès sera automatiquement retiré à expiration.",
+                    parse_mode="Markdown"
                 )
             else:
-                user_msg = (
+                await context.bot.send_message(
+                    int(uid),
                     f"✅ **Accès accordé!**\n\n"
                     f"📢 Canal: **{ch['name']}**\n"
                     f"⏱ Durée: **{dur_label}**\n"
                     f"📅 Expire le: {expire_str}\n\n"
-                    f"⚠️ Votre accès sera automatiquement retiré à expiration."
+                    f"✅ Vous pouvez rejoindre le canal.\n"
+                    f"⚠️ Votre accès sera automatiquement retiré à expiration.",
+                    parse_mode="Markdown"
                 )
-            await context.bot.send_message(int(uid), user_msg, parse_mode="Markdown")
         except Exception:
             pass
 
@@ -2656,7 +1228,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🆔 Utilisateur: `{uid}`\n"
             f"⏱ Durée: **{dur_label}**\n"
             f"📅 Expire: {expire_str}\n"
-            f"🔗 Lien envoyé: {'Oui' if invite_link else 'Non (erreur)'}",
+            f"🔗 Lien envoyé à l'utilisateur.",
             parse_mode="Markdown"
         )
 
@@ -2732,7 +1304,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Débloquer si banni
         try:
-            await context.bot.unban_chat_member(int(cid), payer_uid)
+            await context.bot.unban_chat_member(int(cid), payer_uid, only_if_banned=True)
         except Exception:
             pass
 
@@ -2761,73 +1333,99 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # COMMANDES ADMIN
 # ═══════════════════════════════════════════════════════════════
 
-def _admin_menu_keyboard(ai_toggle: bool) -> InlineKeyboardMarkup:
-    """Construit le clavier du menu admin avec boutons groupés."""
-    ia_lbl = "🔴 Désactiver IA" if ai_toggle else "🟢 Activer IA"
-    ia_cb  = "adm_ai_off"      if ai_toggle else "adm_ai_on"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("━━━ 👥 Gestion Membres ━━━", callback_data="adm_noop")],
-        [InlineKeyboardButton("📢 Canaux",         callback_data="adm_channels"),
-         InlineKeyboardButton("👥 Membres",        callback_data="fl_ms")],
-        [InlineKeyboardButton("✅ Accorder accès", callback_data="fl_gr"),
-         InlineKeyboardButton("⏫ Rallonger",      callback_data="fl_ex")],
-        [InlineKeyboardButton("❌ Retirer membre", callback_data="fl_rm"),
-         InlineKeyboardButton("🔓 Débloquer",      callback_data="fl_ub")],
-        [InlineKeyboardButton("━━━ ⚙️ Configuration ━━━",  callback_data="adm_noop")],
-        [InlineKeyboardButton("⏱ Durée défaut",   callback_data="fl_sd"),
-         InlineKeyboardButton("🎁 Bonus gratuit",  callback_data="fl_bn")],
-        [InlineKeyboardButton(ia_lbl,              callback_data=ia_cb),
-         InlineKeyboardButton("📊 Vérif. quota",   callback_data="adm_checkquota")],
-        [InlineKeyboardButton("🔑 Config clé IA",  callback_data="adm_setaikey"),
-         InlineKeyboardButton("📋 Mes clés IA",    callback_data="adm_listaikeys")],
-        [InlineKeyboardButton("📖 Mode d'emploi", callback_data="fl_me")],
-        [InlineKeyboardButton("━━━ 🌐 Général ━━━",        callback_data="adm_noop")],
-        [InlineKeyboardButton("👑 Gérer Admins",   callback_data="adm_admins"),
-         InlineKeyboardButton("❓ Aide complète",  callback_data="adm_help")],
-        [InlineKeyboardButton("💳 Payer",          callback_data="pay_start"),
-         InlineKeyboardButton("💬 Assistance",     callback_data="assist_start")],
-    ])
-
-
-def _admin_menu_text(ai_toggle: bool) -> str:
-    all_keys = _load_ai_keys()
-    has_key = any(all_keys.get(p["code"]) for p in AI_PROVIDERS)
-    ia_ok = gemini_client or has_key
-    ia_status = "✅ Active" if ia_ok else "❌ Aucune clé"
-    ia_state  = "Oui" if ai_toggle else "Non"
-    return (
-        "👋 *Bienvenue, Administrateur!*\n\n"
-        f"🤖 *IA:* {ia_status} | *Activée:* {ia_state}\n\n"
-        "_Choisissez une action ci-dessous :_"
-    )
-
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if is_admin(user_id):
+        ai_status = "✅ Active" if gemini_client else "❌ Non configurée (GEMINI_API_KEY manquant)"
         data = load_data()
         ai_toggle = data.get("ai_enabled", True)
+        admin_keyboard = [
+            [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
+            [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
+            [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
+        ]
         await update.message.reply_text(
-            _admin_menu_text(ai_toggle),
-            reply_markup=_admin_menu_keyboard(ai_toggle),
+            "👋 **Bienvenue, Administrateur!**\n\n"
+            "📋 **Commandes membres:**\n"
+            "• `/channels` — Liste des canaux\n"
+            "• `/members <id_canal>` — Membres + temps restant\n"
+            "• `/extend <id_canal> <id_user> <heures>` — Rallonger l'accès\n"
+            "• `/grant <id_canal> <id_user> <heures>` — Accorder l'accès\n"
+            "• `/remove <id_canal> <id_user>` — Retirer un membre\n"
+            "• `/unblock <id_canal> <id_user>` — Débloquer\n\n"
+            "📋 **Autres commandes:**\n"
+            "• `/setduration <id_canal> <heures>` — Durée par défaut\n"
+            "• `/bonus` — Accorder accès sans paiement\n"
+            "• `/ai_on` / `/ai_off` — IA assistant\n"
+            "• `/help` — Aide complète\n\n"
+            f"🤖 **IA:** {ai_status} | **Activée:** {'Oui' if ai_toggle else 'Non'}",
+            reply_markup=InlineKeyboardMarkup(admin_keyboard),
             parse_mode="Markdown"
         )
     else:
         user_keyboard = [
+            [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
             [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
-            [InlineKeyboardButton("🎁 Demander un bonus",    callback_data="bonus_start")],
-            [InlineKeyboardButton("💬 Assistance",           callback_data="assist_start")]
+            [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
+            [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
         ]
         await update.message.reply_text(
-            "👋 *Bienvenue!*\n\n"
-            f"• 💳 Abonnement mensuel: *50 USD / mois*\n"
-            f"• 💵 Ou: *{PRICE_PER_DAY_FCFA} FCFA / jour*\n"
-            f"• 🎁 Vous pouvez demander un accès gratuit (bonus)\n"
+            "👋 **Bienvenue!**\n\n"
+            f"• 📊 Vérifier votre **durée restante** d'accès\n"
+            f"• 💳 Abonnement mensuel: **50 USD / mois**\n"
+            f"• 💵 Ou: **{PRICE_PER_DAY_FCFA} FCFA / jour**\n"
+            f"• 🎁 Demander un accès gratuit (bonus)\n"
             f"• 💬 Contacter l'assistance",
             reply_markup=InlineKeyboardMarkup(user_keyboard),
             parse_mode="Markdown"
         )
+
+
+async def statut_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Afficher la durée restante d'abonnement pour l'utilisateur"""
+    user = update.effective_user
+    uid_str = str(user.id)
+    data = load_data()
+    channels = data.get("channels", {})
+    current_time = int(datetime.now().timestamp())
+    found = False
+    lines = [f"📊 **Statut de vos abonnements**\n👤 {user.first_name}\n"]
+
+    for cid, ch in channels.items():
+        members = ch.get("members", {})
+        if uid_str in members:
+            m = members[uid_str]
+            expires_at = m.get("expires_at", 0)
+            time_left = expires_at - current_time
+            dur_total = format_duration_label(m.get("duration_seconds", 0))
+            expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M') if expires_at else "?"
+            if time_left > 0:
+                remaining = format_time_remaining(time_left)
+                lines.append(
+                    f"📢 **{ch.get('name', cid)}**\n"
+                    f"   ✅ Accès **ACTIF**\n"
+                    f"   ⏳ Temps restant: **{remaining}**\n"
+                    f"   📅 Expire le: {expire_str}\n"
+                    f"   ⏱ Durée totale: {dur_total}\n"
+                )
+            else:
+                lines.append(
+                    f"📢 **{ch.get('name', cid)}**\n"
+                    f"   🔴 Accès **EXPIRÉ** depuis le {expire_str}\n"
+                )
+            found = True
+
+    if not found:
+        lines.append(
+            "ℹ️ Vous n'avez aucun abonnement enregistré.\n\n"
+            "Tapez /start pour souscrire ou demander un bonus."
+        )
+
+    back_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🏠 Menu principal", callback_data="back_main")
+    ]])
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=back_kb)
 
 
 async def ai_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2849,236 +1447,6 @@ async def ai_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["ai_enabled"] = False
     save_data(data)
     await update.message.reply_text("⭕ **Assistant IA désactivé.**\n\nLe bot ne répondra plus automatiquement.", parse_mode="Markdown")
-
-
-async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /addadmin <user_id> — ajouter un administrateur (super-admins uniquement)."""
-    caller = update.effective_user.id
-    if caller not in ADMINS:
-        await update.message.reply_text("❌ Seuls les super-administrateurs peuvent ajouter des admins.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: `/addadmin <user_id>`", parse_mode="Markdown")
-        return
-    try:
-        new_admin_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ ID invalide. Utilisez un identifiant numérique.")
-        return
-
-    data = load_data()
-    admins_list = data.get("extra_admins", [])
-    if new_admin_id in admins_list or new_admin_id in ADMINS:
-        await update.message.reply_text(f"ℹ️ L'utilisateur `{new_admin_id}` est déjà administrateur.", parse_mode="Markdown")
-        return
-    admins_list.append(new_admin_id)
-    data["extra_admins"] = admins_list
-    save_data(data)
-    extra_admins.add(new_admin_id)
-    await update.message.reply_text(
-        f"✅ *Administrateur ajouté !*\n\n🆔 ID: `{new_admin_id}`\n\nIl peut maintenant utiliser toutes les commandes admin.",
-        parse_mode="Markdown"
-    )
-    try:
-        await context.bot.send_message(
-            new_admin_id,
-            "✅ *Vous avez été ajouté comme administrateur du bot Baccara!*\n\nTapez /start pour voir le menu.",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        pass
-
-
-async def removeadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /removeadmin <user_id> — retirer un administrateur (super-admins uniquement)."""
-    caller = update.effective_user.id
-    if caller not in ADMINS:
-        await update.message.reply_text("❌ Seuls les super-administrateurs peuvent retirer des admins.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: `/removeadmin <user_id>`", parse_mode="Markdown")
-        return
-    try:
-        target_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ ID invalide. Utilisez un identifiant numérique.")
-        return
-    if target_id in ADMINS:
-        await update.message.reply_text("❌ Impossible de retirer un super-administrateur de base.")
-        return
-
-    data = load_data()
-    admins_list = data.get("extra_admins", [])
-    if target_id not in admins_list:
-        await update.message.reply_text(f"ℹ️ L'utilisateur `{target_id}` n'est pas dans la liste des admins.", parse_mode="Markdown")
-        return
-    admins_list.remove(target_id)
-    data["extra_admins"] = admins_list
-    save_data(data)
-    extra_admins.discard(target_id)
-    await update.message.reply_text(
-        f"✅ *Administrateur retiré.*\n\n🆔 ID: `{target_id}`",
-        parse_mode="Markdown"
-    )
-
-
-async def listadmins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /listadmins — voir tous les administrateurs."""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Accès refusé.")
-        return
-    data = load_data()
-    extra = data.get("extra_admins", [])
-    lines = ["👑 *Liste des administrateurs:*\n"]
-    lines.append("*Super-admins (fixes):*")
-    for aid in ADMINS:
-        lines.append(f"• `{aid}`")
-    if extra:
-        lines.append("\n*Admins ajoutés dynamiquement:*")
-        for aid in extra:
-            lines.append(f"• `{aid}`")
-    else:
-        lines.append("\n_Aucun admin dynamique ajouté._")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def setaikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /setaikey — choisir le fournisseur IA et saisir la clé API."""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Accès refusé.")
-        return
-
-    hints = {
-        "gemini":   "Format: `AIza...`",
-        "openai":   "Format: `sk-...`",
-        "deepseek": "Format: `sk-...`",
-        "groq":     "Format: `gsk_...`",
-    }
-    keyboard = []
-    for i, p in enumerate(AI_PROVIDERS, start=1):
-        keyboard.append([InlineKeyboardButton(
-            f"{i}. {p['name']}",
-            callback_data=f"aikey_{p['code']}"
-        )])
-    keyboard.append([InlineKeyboardButton("❌ Annuler", callback_data="aikey_cancel")])
-
-    lines = ["🤖 *Configurer une clé API IA*\n", "Choisissez le fournisseur :"]
-    for i, p in enumerate(AI_PROVIDERS, start=1):
-        h = hints.get(p["code"], "")
-        lines.append(f"{i}. *{p['name']}* — {h}")
-
-    await update.message.reply_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
-
-
-async def listaikeys_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /listaikeys — affiche les clés IA configurées et leur statut."""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Accès refusé.")
-        return
-
-    all_keys = _load_ai_keys()
-    lines = ["🔑 **Clés API IA configurées:**\n"]
-
-    for p in AI_PROVIDERS:
-        pcode = p["code"]
-        pname = p["name"]
-        keys = all_keys.get(pcode, [])
-        if not keys:
-            lines.append(f"**{pname}:** aucune clé")
-            continue
-        for idx, key in enumerate(keys):
-            masked = key[:6] + "…" + key[-4:] if len(key) > 12 else "***"
-            if _is_quota_ok(pcode, idx):
-                status = "✅ actif"
-            else:
-                ts = ai_quota_exhausted.get((pcode, idx), 0)
-                remaining = int(QUOTA_RESET_SECONDS - (datetime.now().timestamp() - ts))
-                status = f"⚠️ quota épuisé (reset dans ~{remaining//60}min)"
-            lines.append(f"**{pname} [{idx+1}]:** `{masked}` — {status}")
-
-    lines.append("\n_Utilisez /setaikey pour ajouter ou /checkquota pour tester en temps réel._")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def checkquota_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /checkquota — teste toutes les clés configurées et affiche le quota en temps réel."""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Accès refusé.")
-        return
-
-    all_keys = _load_ai_keys()
-    has_any = any(all_keys.get(p["code"]) for p in AI_PROVIDERS)
-    if not has_any:
-        await update.message.reply_text(
-            "❌ Aucune clé API configurée.\nUtilisez `/setaikey` pour en ajouter une.",
-            parse_mode="Markdown"
-        )
-        return
-
-    msg = await update.message.reply_text(
-        "🔄 **Test du quota de toutes les clés…**\n\nMerci de patienter, cela peut prendre quelques secondes.",
-        parse_mode="Markdown"
-    )
-
-    results = []
-    for p in AI_PROVIDERS:
-        pcode = p["code"]
-        pname = p["name"]
-        keys = all_keys.get(pcode, [])
-        if not keys:
-            results.append(f"**{pname}:** _aucune clé configurée_")
-            continue
-        for idx, key in enumerate(keys):
-            masked = key[:6] + "…" + key[-4:] if len(key) > 12 else "***"
-            results.append(f"\n🔑 **{pname} [{idx+1}]** (`{masked}`) :")
-            ok, status_text = await _test_ai_key(pcode, key)
-            # Indenter chaque ligne du résultat
-            for line in status_text.split("\n"):
-                if line.strip():
-                    results.append(f"  {line}")
-
-    full_msg = "📊 **Rapport de quota IA**\n" + "\n".join(results)
-
-    # Telegram limite les messages à 4096 caractères
-    if len(full_msg) > 4000:
-        full_msg = full_msg[:3990] + "\n_…(tronqué)_"
-
-    await msg.edit_text(full_msg, parse_mode="Markdown")
-
-
-async def setmode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /setmode — définit le mode d'emploi d'un canal (admin uniquement)."""
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text("❌ Accès refusé.")
-        return
-
-    data = load_data()
-    channels = data.get("channels", {})
-    if not channels:
-        await update.message.reply_text("📢 Aucun canal géré. Ajoutez le bot comme admin d'un canal d'abord.")
-        return
-
-    rows = []
-    for cid, ch in channels.items():
-        rows.append([InlineKeyboardButton(
-            f"📢 {ch.get('name', cid)}",
-            callback_data=f"fl_me_{cid}"
-        )])
-    if not rows:
-        await update.message.reply_text("📢 Aucun canal géré.")
-        return
-    rows.append([InlineKeyboardButton("🔙 Menu principal", callback_data="adm_menu")])
-
-    await update.message.reply_text(
-        "📖 *Mode d'emploi — Choisissez un canal :*\n\n"
-        "_Sélectionnez le canal pour voir ou modifier son mode d'emploi._",
-        reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
-    )
 
 
 async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3103,12 +1471,13 @@ async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         members = ch.get("members", {})
         active = sum(1 for m in members.values() if m.get("expires_at", 0) > current_time)
         expired = len(members) - active
-        default_h = ch.get("default_duration_hours", 24)
+        default_secs = ch.get("default_duration_seconds", ch.get("default_duration_hours", 24) * 3600)
+        dur_label = format_duration_label(default_secs)
         msg += (
             f"📢 **{ch.get('name', cid)}**\n"
             f"   🆔 `{cid}`\n"
             f"   👥 {active} actif(s) | 🔴 {expired} expiré(s)\n"
-            f"   ⏱ Défaut: {default_h}h\n\n"
+            f"   ⏱ Défaut: {dur_label}\n\n"
         )
 
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -3190,18 +1559,19 @@ async def setduration_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "❌ Usage: `/setduration <id_canal> <heures>`\n"
             "Exemple: `/setduration -1001234567890 24`\n"
-            "_Définit la durée par défaut du bouton Défaut._",
+            "_Définit la durée par défaut (en heures entières, ex: 0.5 pour 30min)._",
             parse_mode="Markdown"
         )
         return
 
     cid = context.args[0]
     try:
-        hours = int(context.args[1])
-        if not (1 <= hours <= 750):
+        hours_float = float(context.args[1])
+        if not (0.1 <= hours_float <= 750):
             raise ValueError
+        duration_seconds = int(hours_float * 3600)
     except ValueError:
-        await update.message.reply_text("❌ Durée invalide. Entrez un nombre entre 1 et 750.")
+        await update.message.reply_text("❌ Durée invalide. Entrez un nombre entre 0.1 et 750 (heures).")
         return
 
     data = load_data()
@@ -3209,10 +1579,11 @@ async def setduration_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Canal introuvable.")
         return
 
-    data["channels"][cid]["default_duration_hours"] = hours
+    data["channels"][cid]["default_duration_seconds"] = duration_seconds
     save_data(data)
+    dur_label = format_duration_label(duration_seconds)
     await update.message.reply_text(
-        f"✅ Durée par défaut mise à jour: **{hours}h** pour **{data['channels'][cid]['name']}**",
+        f"✅ Durée par défaut mise à jour: **{dur_label}** pour **{data['channels'][cid]['name']}**",
         parse_mode="Markdown"
     )
 
@@ -3263,16 +1634,40 @@ async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dur_label = format_duration_label(duration_seconds)
     expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M')
 
+    # Générer un lien d'invitation unique
+    cmd_invite_link = None
     try:
-        await context.bot.send_message(
-            int(uid),
-            f"✅ **Accès accordé!**\n\n"
-            f"📢 Canal: **{ch['name']}**\n"
-            f"⏱ Durée: **{dur_label}**\n"
-            f"📅 Expire le: {expire_str}\n\n"
-            f"⚠️ Votre accès sera automatiquement retiré à expiration.",
-            parse_mode="Markdown"
-        )
+        invite_obj = await context.bot.create_chat_invite_link(int(cid), member_limit=1)
+        cmd_invite_link = invite_obj.invite_link
+        pending_invites[(cid, uid)] = cmd_invite_link
+    except Exception as e:
+        logger.warning(f"Impossible de créer le lien /grant pour {cid}: {e}")
+
+    try:
+        if cmd_invite_link:
+            await context.bot.send_message(
+                int(uid),
+                f"✅ **Accès accordé!**\n\n"
+                f"📢 Canal: **{ch['name']}**\n"
+                f"⏱ Durée: **{dur_label}**\n"
+                f"📅 Expire le: {expire_str}\n\n"
+                f"👇 **Cliquez sur ce lien pour rejoindre le canal:**\n"
+                f"{cmd_invite_link}\n\n"
+                f"⚠️ Ce lien est à usage unique — ne le partagez pas.\n"
+                f"⚠️ Votre accès sera automatiquement retiré à expiration.",
+                parse_mode="Markdown"
+            )
+        else:
+            await context.bot.send_message(
+                int(uid),
+                f"✅ **Accès accordé!**\n\n"
+                f"📢 Canal: **{ch['name']}**\n"
+                f"⏱ Durée: **{dur_label}**\n"
+                f"📅 Expire le: {expire_str}\n\n"
+                f"✅ Vous pouvez rejoindre le canal.\n"
+                f"⚠️ Votre accès sera automatiquement retiré à expiration.",
+                parse_mode="Markdown"
+            )
     except Exception:
         pass
 
@@ -3281,7 +1676,8 @@ async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Canal: {ch['name']}\n"
         f"🆔 Utilisateur: `{uid}`\n"
         f"⏱ Durée: **{dur_label}**\n"
-        f"📅 Expire: {expire_str}",
+        f"📅 Expire: {expire_str}\n"
+        f"🔗 Lien d'invitation envoyé à l'utilisateur.",
         parse_mode="Markdown"
     )
 
@@ -3312,7 +1708,7 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del ch["blocked"][uid]
         # Unban pour lui permettre de rejoindre
         try:
-            await context.bot.unban_chat_member(int(cid), int(uid))
+            await context.bot.unban_chat_member(int(cid), int(uid), only_if_banned=True)
         except Exception:
             pass
         save_data(data)
@@ -3381,7 +1777,7 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     expire_str = datetime.fromtimestamp(new_expiry).strftime('%d/%m/%Y à %H:%M')
 
     try:
-        await context.bot.unban_chat_member(int(cid), int(uid))
+        await context.bot.unban_chat_member(int(cid), int(uid), only_if_banned=True)
     except Exception:
         pass
 
@@ -3591,7 +1987,7 @@ async def _get_crypto_rate_fcfa(symbol: str) -> float:
         return float(CRYPTO_FALLBACK_FCFA.get(symbol, 600))
 
 
-OCR_API_KEY = OCR_SPACE_API_KEY or "K86527928888957"
+OCR_API_KEY = "K86527928888957"
 
 
 async def _ocr_extract_text(image_bytes: bytes) -> str:
@@ -3619,233 +2015,27 @@ async def _ocr_extract_text(image_bytes: bytes) -> str:
     return ""
 
 
-_VISION_PROMPT = (
-    "You are a payment screenshot analyzer. Analyze this payment/transaction screenshot "
-    "and extract the information. The image may be in ANY language (French, English, Russian, "
-    "Arabic, Spanish, German, Chinese, Portuguese, Turkish, etc.).\n\n"
-    "Return ONLY a valid JSON object with exactly these fields:\n"
-    "{\n"
-    '  "app": "payment app name (Binance, Wave, PayPal, MoneyFusion, Orange Money, MTN, etc.)",\n'
-    '  "montant": 0.04,\n'
-    '  "devise": "BNB",\n'
-    '  "reference": "unique transaction ID / txid / hash / reference number / invoice number",\n'
-    '  "statut": "completed",\n'
-    '  "date": "2026-02-20"\n'
-    "}\n\n"
-    "Extraction rules:\n"
-    "- 'montant': positive number only (the sent/paid amount, NOT the fee/commission)\n"
-    "- 'devise': currency or crypto symbol (BNB, ETH, TRX, USDT, USDC, USD, EUR, FCFA, XOF, GNF, RUB, etc.)\n"
-    "- 'reference': the most unique transaction identifier available "
-    "(txid hash / reference UUID / invoice number / order ID). "
-    "For crypto: prefer the full txid hash (0x...). "
-    "For mobile money: prefer the reference/payment UUID.\n"
-    "- 'statut': must be exactly 'completed', 'pending', or 'failed'\n"
-    "- 'date': ISO format YYYY-MM-DD if visible, else null\n"
-    "- If a field cannot be found, use null\n"
-    "- Return ONLY the JSON object. No markdown, no explanation, no code block."
-)
-
-# Modèles vision pour chaque fournisseur (compatibles images)
-_VISION_MODELS = {
-    "gemini":   "gemini-2.0-flash",              # Vision native (gemini-1.5-flash retiré de l'API)
-    "openai":   "gpt-4o-mini",                   # Vision via image_url base64
-    "groq":     "llama-3.2-11b-vision-preview",  # Vision Llama sur Groq
-    # deepseek: pas de vision dans l'API standard → ignoré
-}
-
-
-def _parse_vision_json(raw: str, provider: str) -> dict | None:
-    """Parse la réponse JSON d'un modèle vision. Retourne le dict ou None si invalide."""
-    import json as _json
-    import re as _re
-    try:
-        raw = raw.strip()
-        # Nettoyer les blocs markdown éventuels
-        raw = _re.sub(r'^```(?:json)?\s*', '', raw, flags=_re.MULTILINE)
-        raw = _re.sub(r'\s*```$', '', raw, flags=_re.MULTILINE)
-        raw = raw.strip()
-        parsed = _json.loads(raw)
-        montant = parsed.get("montant")
-        if montant is None or not isinstance(montant, (int, float)) or float(montant) <= 0:
-            logger.warning(f"Vision {provider}: montant invalide → {montant}")
-            return None
-        devise = str(parsed.get("devise") or "XOF").upper().strip()
-        reference = str(parsed.get("reference") or "").strip()
-        app = str(parsed.get("app") or "Inconnu").strip()
-        statut = str(parsed.get("statut") or "unknown").strip()
-        date_str = str(parsed.get("date") or "").strip()
-        logger.info(f"✅ Vision {provider} OK → {montant} {devise} via {app} ref={reference[:40]}")
-        return {
-            "app": app,
-            "montant": float(montant),
-            "devise_raw": devise,
-            "reference": reference,
-            "statut": statut,
-            "date": date_str,
-        }
-    except Exception as e:
-        logger.warning(f"Vision {provider} parse JSON échec: {e} | raw={raw[:100]}")
-        return None
-
-
-async def _ai_analyze_image(image_bytes: bytes) -> dict | None:
-    """
-    Analyse une image de paiement via TOUS les fournisseurs IA disponibles avec fallback.
-    Ordre : Gemini → OpenAI → Groq → (DeepSeek ignoré, pas de vision standard)
-    Retourne un dict ou None si tous échouent.
-    Gère toutes les langues : français, anglais, russe, arabe, espagnol, allemand, chinois...
-    """
-    import base64 as _b64
-    import asyncio as _asyncio
-
-    b64 = _b64.b64encode(image_bytes).decode()
-    all_keys = _load_ai_keys()
-
-    # ── Gemini Vision ───────────────────────────────────────────────────
-    gemini_keys = all_keys.get("gemini", [])
-    for idx, key in enumerate(gemini_keys):
-        if not _is_quota_ok("gemini", idx):
-            continue
-        if google_genai is None:
-            break
-        try:
-            client = _init_gemini_client(key)
-            vision_model = _VISION_MODELS["gemini"]
-            contents = [{
-                "role": "user",
-                "parts": [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-                    {"text": _VISION_PROMPT}
-                ]
-            }]
-            loop = _asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda c=client, m=vision_model, ct=contents: c.models.generate_content(
-                    model=m, contents=ct
-                )
-            )
-            result = _parse_vision_json(response.text, f"Gemini/{vision_model}")
-            if result:
-                return result
-        except Exception as e:
-            if _is_quota_error(e):
-                _mark_quota_exhausted("gemini", idx)
-                logger.warning(f"Vision Gemini[{idx}] quota épuisé, essai suivant…")
-            else:
-                logger.warning(f"Vision Gemini[{idx}] erreur: {e}")
-
-    # ── OpenAI Vision (gpt-4o-mini) ─────────────────────────────────────
-    openai_keys = all_keys.get("openai", [])
-    for idx, key in enumerate(openai_keys):
-        if not _is_quota_ok("openai", idx):
-            continue
-        if openai_lib is None:
-            break
-        try:
-            oa_client = openai_lib.AsyncOpenAI(api_key=key)
-            vision_model = _VISION_MODELS["openai"]
-            completion = await oa_client.chat.completions.create(
-                model=vision_model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url",
-                         "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                        {"type": "text", "text": _VISION_PROMPT}
-                    ]
-                }],
-                max_tokens=400
-            )
-            raw = completion.choices[0].message.content
-            result = _parse_vision_json(raw, f"OpenAI/{vision_model}")
-            if result:
-                return result
-        except Exception as e:
-            if _is_quota_error(e):
-                _mark_quota_exhausted("openai", idx)
-                logger.warning(f"Vision OpenAI[{idx}] quota épuisé, essai suivant…")
-            else:
-                logger.warning(f"Vision OpenAI[{idx}] erreur: {e}")
-
-    # ── Groq Vision (llama-3.2-11b-vision-preview) ──────────────────────
-    groq_keys = all_keys.get("groq", [])
-    for idx, key in enumerate(groq_keys):
-        if not _is_quota_ok("groq", idx):
-            continue
-        if openai_lib is None:
-            break
-        try:
-            groq_info = next(p for p in AI_PROVIDERS if p["code"] == "groq")
-            oa_client = openai_lib.AsyncOpenAI(
-                api_key=key,
-                base_url=groq_info.get("base_url", "https://api.groq.com/openai/v1")
-            )
-            vision_model = _VISION_MODELS["groq"]
-            completion = await oa_client.chat.completions.create(
-                model=vision_model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url",
-                         "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                        {"type": "text", "text": _VISION_PROMPT}
-                    ]
-                }],
-                max_tokens=400
-            )
-            raw = completion.choices[0].message.content
-            result = _parse_vision_json(raw, f"Groq/{vision_model}")
-            if result:
-                return result
-        except Exception as e:
-            if _is_quota_error(e):
-                _mark_quota_exhausted("groq", idx)
-                logger.warning(f"Vision Groq[{idx}] quota épuisé, essai suivant…")
-            else:
-                logger.warning(f"Vision Groq[{idx}] erreur: {e}")
-
-    logger.warning("Vision: tous les fournisseurs ont échoué → secours OCR")
-    return None
-
-
-# Alias de compatibilité (ancienne référence interne)
-_gemini_analyze_image = _ai_analyze_image
-
-
 def _parse_payment_text(text: str) -> dict:
     """Parse le texte OCR pour extraire montant, devise, référence et application."""
     import re as _re
 
     t = text.upper()
 
-    # ── Nettoyer les lignes cassées (Txid Binance souvent coupé en 2-3 lignes) ──
-    # Rejoindre les fragments hexadécimaux consécutifs
-    t_joined = _re.sub(r'(0X[0-9A-F]+)\s*\n\s*([0-9A-F]+)', r'\1\2', t)
-    if t_joined != t:
-        t = t_joined
-
     # ── Détecter l'application de paiement (multilingue) ───────────────
     app_map = {
         # Crypto exchanges
         "BINANCE": "Binance", "TRUST WALLET": "Trust Wallet", "TRUSTWALLET": "Trust Wallet",
         "COINBASE": "Coinbase", "KUCOIN": "KuCoin", "BYBIT": "Bybit",
-        "CRYPTO.COM": "Crypto.com", "METAMASK": "MetaMask", "OKEX": "OKX", "OKX": "OKX",
-        "KRAKEN": "Kraken", "GATE.IO": "Gate.io", "HUOBI": "Huobi",
+        "CRYPTO.COM": "Crypto.com", "METAMASK": "MetaMask",
         # Mobile money Afrique
         "WAVE": "Wave", "ORANGE MONEY": "Orange Money", "MTN MONEY": "MTN Money",
         "MONEYFUSION": "MoneyFusion", "MONEY FUSION": "MoneyFusion",
         "MOOV": "Moov Money", "FLOOZ": "Flooz", "AIRTEL": "Airtel Money",
         "TMONEY": "T-Money", "FREE MONEY": "Free Money", "YUP": "Yup",
-        "CINETPAY": "CinetPay", "KKIAPAY": "KKiaPay", "FEDAPAY": "FedaPay",
         # International
         "PAYPAL": "PayPal", "REVOLUT": "Revolut", "WISE": "Wise",
         "CASHAPP": "CashApp", "CASH APP": "CashApp", "VENMO": "Venmo",
-        "LYDIA": "Lydia", "SUMERIA": "Sumeria", "WESTERN UNION": "Western Union",
-        "MONEYGRAM": "MoneyGram", "SKRILL": "Skrill", "NETELLER": "Neteller",
-        # Russe / CIS
-        "QIWI": "QIWI", "ЮMONEY": "YuMoney", "YUMONEY": "YuMoney",
-        "ВЫВОД": "Binance",
+        "LYDIA": "Lydia", "SUMERIA": "Sumeria",
     }
     app_name = "Inconnu"
     for kw, name in app_map.items():
@@ -3854,48 +2044,39 @@ def _parse_payment_text(text: str) -> dict:
             break
 
     # Liste des symboles crypto supportés
-    _CRYPTO = r'(BNB|ETH|BTC|TRX|USDT|USDC|BUSD|DAI|SOL|MATIC|ADA|DOGE|XRP|LTC|TON|AVAX|DOT)'
+    _CRYPTO = r'(BNB|ETH|BTC|TRX|USDT|USDC|BUSD|DAI|SOL|MATIC|ADA|DOGE|XRP|LTC)'
 
     # ── Détecter montant + devise ───────────────────────────────────────
-    # Mots-clés multilingues pour "montant" (FR/EN/RU/ES/DE/AR/PT/ZH)
-    _AMOUNT_KW = (
-        r'(?:MONTANT|AMOUNT|СУММА|ИТОГО|TOTAL|SUM|SOMME|MONTO|BETRAG|'
-        r'CANTIDAD|IMPORTE|VALOR|IMPORTO|СУММ|كمية|金额|KWOTA)'
-    )
-
+    # Chaque pattern: (regex, groupe_montant, devise_fixe_ou_None)
     patterns = [
-        # ── Crypto : mot-clé + montant + symbole ──
-        (_AMOUNT_KW + r'[:\s*]+[-]?(\d+[.,]\d+)\s*' + _CRYPTO, 1, None),
-        # Valeur crypto directe (positive ou négative)
+        # ── Crypto ──
+        # Ex: "Сумма : 0.04 BNB" / "Amount 0.04 BNB" / "-0.03999 BNB"
+        # Mot-clé multilingue (montant / amount / сумма / итого / total / sum / сумм)
+        (r'(?:MONTANT|AMOUNT|СУММА|ИТОГО|TOTAL|SUM|SOMME)[:\s*]+[-]?(\d+[.,]\d+)\s*' + _CRYPTO, 1, None),
+        # Valeur crypto directe avec signe optionnel
         (r'[-]?(\d+[.,]\d{1,8})\s*' + _CRYPTO, 1, None),
         # ── Fiat avec devise explicite ──
-        # FCFA/XOF/GNF/CDF — gère séparateurs milliers
-        (r'((?:\d{1,3}(?:[\s\xa0,]\d{3})+|\d+)(?:[.,]\d{1,3})?)\s*(FCFA|XOF|GNF|CDF|XAF)', 1, None),
-        # Stablecoins
+        # FCFA/XOF/GNF/CDF — gère decimaux et séparateurs milliers
+        (r'((?:\d{1,3}(?:[\s\xa0]\d{3})+|\d+)(?:[.,]\d{1,3})?)\s*(FCFA|XOF|GNF|CDF)', 1, None),
+        # Stablecoins (priorité sur USD pour USDT/USDC)
         (r'(\d+[.,]\d{1,4})\s*(USDT|USDC|BUSD|DAI)', 1, None),
         # USD: $50.00 ou 50.00 USD
         (r'\$\s*(\d+[.,]\d{1,2})', 1, 'USD'),
         (r'(\d+[.,]\d{1,2})\s*USD', 1, 'USD'),
-        # EUR
+        # EUR: €50,00 ou 50,00 EUR
         (r'€\s*(\d+[.,]\d{1,2})', 1, 'EUR'),
         (r'(\d+[.,]\d{1,2})\s*EUR', 1, 'EUR'),
-        # GBP
+        # GBP: £50.00 ou 50.00 GBP
         (r'£\s*(\d+[.,]\d{1,2})', 1, 'GBP'),
         (r'(\d+[.,]\d{1,2})\s*GBP', 1, 'GBP'),
-        # CAD
+        # CAD: 50.00 CAD
         (r'CA\$\s*(\d+[.,]\d{1,2})', 1, 'CAD'),
         (r'(\d+[.,]\d{1,2})\s*CAD', 1, 'CAD'),
         # CHF
         (r'(\d+[.,]\d{1,2})\s*CHF', 1, 'CHF'),
-        # RUB (Russian)
-        (r'(\d+[.,]\d{1,2})\s*(?:RUB|РУБ|₽)', 1, 'RUB'),
-        # TRY (Turkish lira)
-        (r'(\d+[.,]\d{1,2})\s*TRY', 1, 'TRY'),
-        # ── Fallback mot-clé + nombre ──
-        (_AMOUNT_KW + r'[:\s]+(\d+[.,]\d{1,3})', 1, 'XOF'),
-        # FCFA seul (nombre avant FCFA sans séparateur milliers)
-        (r'(\d{3,}(?:[.,]\d{1,3})?)\s*(FCFA|XOF)', 1, None),
-        # Dernier recours : nombre décimal
+        # ── Fallback ──
+        # Mot-clé montant + nombre décimal seul → FCFA
+        (r'(?:MONTANT|AMOUNT|СУММА|ИТОГО|TOTAL|SUM)[:\s]+(\d+[.,]\d{1,3})', 1, 'XOF'),
         (r'(\d+[.,]\d{1,3})', 1, 'XOF'),
     ]
 
@@ -3916,110 +2097,66 @@ def _parse_payment_text(text: str) -> dict:
 
     # ── Détecter la référence / Txid (multilingue) ─────────────────────
     ref_patterns = [
-        # Hash crypto complet 0x... (Ethereum/BSC/TRX style) — peut être long
-        r'(0[Xx][0-9A-Fa-f]{20,})',
-        # Txid après label multilingue (EN/RU/FR/ES/DE)
-        r'(?:TXID|TX[\s_]?ID|TRANSACTION[\s_]?(?:ID|HASH)?|HASH|'
-        r'ИДЕНТИФИКАТОР|ТРАНСАКЦИЯ|'
-        r'REFERENCIA|RÉFÉRENCE?|REFERENCE|'
-        r'TRANSAKTION|TRANSAKTIONS[\s_]?ID)'
-        r'[\s:]*([0-9A-Z][0-9A-Z\-_]{5,})',
-        # UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx) — MoneyFusion, CinetPay, etc.
-        r'([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})',
-        # Numéro facture / N° / FACT-... / ORDER-...
-        r'(?:N[°O][\s.]*(?:FACTURE|FACT)?|FACT(?:URE)?|ORDER[\s_]?(?:ID)?|'
-        r'INVOICE[\s_]?(?:NO|ID|#)?|RECHNUNG[\s_]?(?:NR)?)'
-        r'[\s:]*([A-Z0-9][A-Z0-9\-_]{4,39})',
-        # Référence alphanumérique longue (≥8 chars)
-        r'(?:R[ÉE]F(?:ERENCE)?(?:\s+DE\s+PAIEMENT)?|REF)[.:\s]+([A-Z0-9][A-Z0-9\-_]{5,})',
-        # ID long purement numérique (≥10 chiffres)
+        # Hash crypto Ethereum-style (0x...) — Txid Binance, BSC, ETH
+        r'(?:TXID|TX\s*ID|HASH)[:\s]*([0-9A-F]{10,})',
+        r'\b(0[Xx][0-9A-Fa-f]{20,})\b',
+        # Référence alphanumérique standard
+        r'(?:R[ÉE]F[.:\s]+|REFERENCE[:\s]+|TRANSACTION\s*(?:ID)?[:\s]+|'
+        r'ORDER\s*ID[:\s]+|N[°O][:\s]*|FACT[:\s]*)([A-Z0-9\-]{6,40})',
+        # Motifs courants russe (Binance)
+        r'(?:TXID|ИДЕНТИФИКАТОР)[:\s]*([0-9A-F]{10,})',
+        # ID numérique long
         r'\b([0-9]{10,20})\b',
     ]
     reference = ""
     for rp in ref_patterns:
         rm = _re.search(rp, t)
         if rm:
-            candidate = rm.group(1).strip()
-            if len(candidate) >= 6:
-                reference = candidate
-                break
+            reference = rm.group(1).strip()
+            break
 
     return {"montant": montant, "devise_raw": devise_raw, "app": app_name, "reference": reference}
 
 
 async def analyze_payment_screenshot(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
     """
-    Analyse une capture d'écran de paiement.
-    Méthode 1 (prioritaire): Gemini Vision — comprend toutes les langues nativement.
-    Méthode 2 (secours):     OCR.space + regex multilingue.
-    Compatible: Binance, Trust Wallet, PayPal, Wave, Orange Money, MTN, MoneyFusion, etc.
-    Devises: BNB, ETH, BTC, TRX, USDT, USDC + USD, EUR, GBP, RUB, FCFA/XOF, GNF, etc.
+    Analyse une capture d'écran de paiement via OCR.space + parsing regex.
+    Compatible: Binance, Trust Wallet, PayPal, Revolut, Wise, Wave, Orange Money, MTN, etc.
+    Gère: BNB, ETH, BTC, TRX, USDT, USDC + USD, EUR, GBP, CAD, CHF, XOF/FCFA, GNF.
+    Multilingue: français, anglais, russe, arabe, etc. (OCR.space auto-detect).
     """
     import hashlib as _hashlib
 
-    montant = 0.0
-    devise_raw = "XOF"
-    app_name = "Inconnu"
-    reference = ""
-    raw_text = ""
-    method_used = "?"
+    # ── Étape 1: extraction OCR ────────────────────────────────────────
+    try:
+        raw_text = await _ocr_extract_text(image_bytes)
+    except Exception as e:
+        logger.error(f"OCR.space erreur: {e}")
+        return {"success": False, "details": "Service OCR indisponible. Réessayez dans quelques secondes."}
 
-    # ══ Méthode 1 : IA Vision (Gemini → OpenAI → Groq, fallback automatique) ═
-    ai_result = await _ai_analyze_image(image_bytes)
+    if not raw_text.strip():
+        return {"success": False, "details": "Aucun texte détecté sur la capture. L'image est peut-être floue ou mal cadrée."}
 
-    if ai_result and ai_result.get("montant", 0) > 0:
-        montant = ai_result["montant"]
-        devise_raw = ai_result["devise_raw"]
-        app_name = ai_result["app"]
-        reference = ai_result["reference"]
-        method_used = "IA Vision"
-        logger.info(f"✅ Analyse IA Vision: {montant} {devise_raw} via {app_name} ref={reference[:40]}")
-    else:
-        # ══ Méthode 2 : OCR.space + regex (secours) ══════════════════
-        logger.info("Gemini Vision indisponible ou échec → secours OCR.space")
-        try:
-            raw_text = await _ocr_extract_text(image_bytes)
-        except Exception as e:
-            logger.error(f"OCR.space erreur: {e}")
-            return {
-                "success": False,
-                "details": (
-                    "❌ Impossible d'analyser la capture.\n"
-                    "Vérifiez que l'image est nette et bien cadrée, puis réessayez."
-                )
-            }
+    logger.info(f"OCR extrait: {raw_text[:300]}")
 
-        if not raw_text.strip():
-            return {
-                "success": False,
-                "details": (
-                    "❌ Aucun texte détecté sur la capture.\n"
-                    "L'image est peut-être floue, mal cadrée ou trop compressée."
-                )
-            }
+    # ── Étape 2: parsing du texte ──────────────────────────────────────
+    parsed = _parse_payment_text(raw_text)
+    montant = parsed["montant"]
+    devise_raw = parsed["devise_raw"]
+    app_name = parsed["app"]
+    reference = parsed["reference"]
 
-        logger.info(f"OCR extrait: {raw_text[:300]}")
-        parsed = _parse_payment_text(raw_text)
-        montant = parsed["montant"]
-        devise_raw = parsed["devise_raw"]
-        app_name = parsed["app"]
-        reference = parsed["reference"]
-        method_used = "OCR+regex"
+    if montant <= 0:
+        return {
+            "success": False,
+            "details": f"Montant introuvable sur la capture.\n_Texte lu:_ `{raw_text[:150].strip()}`"
+        }
 
-        if montant <= 0:
-            return {
-                "success": False,
-                "details": (
-                    f"❌ Montant introuvable sur la capture.\n"
-                    f"_Texte lu:_ `{raw_text[:200].strip()}`\n\n"
-                    "Assurez-vous que le montant est clairement visible."
-                )
-            }
-
-    # ══ Conversion en FCFA ════════════════════════════════════════════
-    _CRYPTO_SYMBOLS = set(CRYPTO_FALLBACK_FCFA.keys()) | {"USDT", "USDC", "BUSD", "DAI", "TON", "AVAX"}
+    # ── Étape 3: conversion en FCFA ────────────────────────────────────
+    _CRYPTO_SYMBOLS = set(CRYPTO_FALLBACK_FCFA.keys()) | {"USDT", "USDC", "BUSD", "DAI"}
 
     if devise_raw in _CRYPTO_SYMBOLS:
+        # Crypto → récupérer le prix live depuis CoinGecko
         rate = await _get_crypto_rate_fcfa(devise_raw)
         devise_label = devise_raw
         amount_fcfa = int(montant * rate)
@@ -4042,11 +2179,9 @@ async def analyze_payment_screenshot(image_bytes: bytes, mime_type: str = "image
     days = amount_fcfa / PRICE_PER_DAY_FCFA
     hours = int(days * 24)
 
-    # ══ Hash anti-doublon ═════════════════════════════════════════════
-    hash_input = f"{montant:.6g}|{devise_raw}|{reference}|{app_name}".lower()
+    # ── Étape 4: hash anti-doublon ─────────────────────────────────────
+    hash_input = f"{montant:.2f}|{devise_raw}|{reference}|{app_name}".lower()
     payment_hash = _hashlib.sha256(hash_input.encode()).hexdigest()[:24]
-
-    logger.info(f"💰 Paiement analysé ({method_used}): {amount_str} | hash={payment_hash} | ref={reference[:40]}")
 
     return {
         "success": True,
@@ -4061,8 +2196,7 @@ async def analyze_payment_screenshot(image_bytes: bytes, mime_type: str = "image
         "reference": reference,
         "payment_hash": payment_hash,
         "description": f"Paiement de {amount_str} via {app_name}",
-        "raw_text": raw_text[:400],
-        "method": method_used,
+        "raw_text": raw_text[:400]
     }
 
 
@@ -4115,24 +2249,15 @@ async def payer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def annuler_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /annuler — annule le paiement en cours ou la saisie de clé API"""
+    """Commande /annuler — annule le paiement en cours"""
     user = update.effective_user
     if not user:
         return
-    if user.id in ai_key_input_state:
-        ai_key_input_state.pop(user.id)
-        await update.message.reply_text("❌ Saisie de clé API annulée.")
-    elif user.id in admin_flow_state:
-        admin_flow_state.pop(user.id)
-        await update.message.reply_text("❌ Opération annulée.")
-    elif user.id in bonus_msg_state:
-        bonus_msg_state.pop(user.id)
-        await update.message.reply_text("❌ Demande de message annulée.")
-    elif user.id in payment_state:
+    if user.id in payment_state:
         payment_state.pop(user.id)
         await update.message.reply_text("❌ Paiement annulé.")
     else:
-        await update.message.reply_text("ℹ️ Aucune opération en cours à annuler.")
+        await update.message.reply_text("ℹ️ Aucun paiement en cours à annuler.")
 
 
 async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4294,7 +2419,7 @@ async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Débloquer si banni
     try:
-        await context.bot.unban_chat_member(int(cid), user.id)
+        await context.bot.unban_chat_member(int(cid), user.id, only_if_banned=True)
     except Exception:
         pass
 
@@ -4311,19 +2436,6 @@ async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYP
         pending_invites[(cid, str(user.id))] = invite_link
     except Exception as e:
         logger.warning(f"Impossible de créer le lien d'invitation pour {cid}: {e}")
-        for admin_id in ADMINS:
-            try:
-                await context.bot.send_message(
-                    admin_id,
-                    f"⚠️ *Bot non admin dans le canal* `{ch_name}`\n\n"
-                    f"Le paiement de @{user.username or user.first_name} (`{user.id}`) a été validé automatiquement "
-                    f"mais le lien d'invitation n'a pas pu être généré.\n\n"
-                    f"➡️ Ajoutez le bot comme administrateur dans `{ch_name}` (canal `{cid}`) "
-                    f"puis envoyez manuellement le lien à l'utilisateur.",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
 
     # Confirmer à l'utilisateur avec le lien
     if invite_link:
@@ -4355,26 +2467,18 @@ async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYP
     # Notifier les admins
     await notify_admins_payment(
         context, user, cid, ch_name, result["amount_str"], hours,
-        photo.file_id, reference,
-        raw_text=result.get("raw_text", ""),
-        app_name=result.get("app", ""),
-        method=result.get("method", "?")
+        photo.file_id, reference, result.get("raw_text", "")
     )
 
 
 async def notify_admins_payment(context, user, cid: str, ch_name: str,
                                  amount_str: str, hours: int, photo_file_id: str,
-                                 reference: str = "", raw_text: str = "",
-                                 app_name: str = "", method: str = "?"):
+                                 reference: str = "", raw_text: str = ""):
     """Notifie les admins d'un nouveau paiement validé"""
     dur_label = format_duration_label(hours * 3600)
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
     username = f"@{user.username}" if user.username else "N/A"
-
-    ref_display = reference[:60] if reference else "—"
-    ref_line = f"🔖 Référence: `{ref_display}`\n"
-    app_line = f"📱 Application: **{app_name}**\n" if app_name and app_name != "Inconnu" else ""
-    method_line = f"🤖 Analysé via: _{method}_\n" if method else ""
+    ref_line = f"🔖 Référence: `{reference}`\n" if reference else ""
     ocr_preview = f"\n📄 _OCR: {raw_text[:120].strip()}_" if raw_text else ""
 
     caption = (
@@ -4383,9 +2487,7 @@ async def notify_admins_payment(context, user, cid: str, ch_name: str,
         f"🆔 ID: `{user.id}`\n"
         f"📢 Canal: **{ch_name}**\n"
         f"💰 Montant: **{amount_str}**\n"
-        f"{app_line}"
         f"{ref_line}"
-        f"{method_line}"
         f"⏱ Accès accordé: **{dur_label}**\n"
         f"✅ Accès activé automatiquement."
         f"{ocr_preview}"
@@ -4411,21 +2513,14 @@ async def notify_admins_payment(context, user, cid: str, ch_name: str,
 # ═══════════════════════════════════════════════════════════════
 
 async def save_telethon_session(session_str: str, context, admin_id: int):
-    """Sauvegarde la session Telethon (channels_data.json + fichier) et notifie l'admin"""
-    # Sauvegarde dans channels_data.json — persiste sur Render.com
-    try:
-        data = load_data()
-        data["telethon_session"] = session_str
-        save_data(data)
-        logger.info("Session Telethon sauvegardée dans channels_data.json")
-    except Exception as e:
-        logger.error(f"Erreur sauvegarde session JSON: {e}")
-    # Sauvegarde aussi dans telethon_session.txt (fallback local)
+    """Sauvegarde la session Telethon dans un fichier et notifie l'admin"""
+    # Sauvegarder dans un fichier local pour persistance
     try:
         with open("telethon_session.txt", "w") as f:
             f.write(session_str)
-    except Exception:
-        pass
+        logger.info("Session Telethon sauvegardée dans telethon_session.txt")
+    except Exception as e:
+        logger.error(f"Erreur sauvegarde session: {e}")
 
     # Message partie 1: confirmation
     await context.bot.send_message(
@@ -4464,7 +2559,7 @@ async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TELETHON_API_ID or not TELETHON_API_HASH:
         await update.message.reply_text(
             "❌ **API Telethon non configurée.**\n\n"
-            "Configurez les variables d'environnement:\n"
+            "Ajoutez ces secrets dans Replit:\n"
             "• `TELETHON_API_ID` — votre API ID\n"
             "• `TELETHON_API_HASH` — votre API Hash\n\n"
             "Obtenez-les sur https://my.telegram.org",
@@ -4603,8 +2698,8 @@ async def check_expirations_task(application: Application):
                             f"⏰ **Accès expiré — {ch['name']}**\n\n"
                             f"Votre accès à ce canal a expiré et vous avez été retiré.\n\n"
                             f"🚫 Toute tentative de retour sera automatiquement bloquée.\n\n"
-                            f"💳 Pour renouveler votre abonnement, contactez notre assistant:\n"
-                            f"👉 Appuyez sur /start",
+                            f"💳 Pour renouveler votre abonnement, écrivez à @Kouam2025_bot\n"
+                            f"👉 Ou appuyez sur /start dans ce bot.",
                             parse_mode="Markdown"
                         )
                     except Exception:
@@ -4629,17 +2724,11 @@ async def check_expirations_task(application: Application):
 async def main():
     logger.info("🤖 Démarrage du bot multi-canal...")
 
-    # Charger les admins dynamiques depuis le fichier de données
-    _startup_data = load_data()
-    for aid in _startup_data.get("extra_admins", []):
-        extra_admins.add(int(aid))
-    if extra_admins:
-        logger.info(f"👑 {len(extra_admins)} admin(s) dynamique(s) chargé(s)")
-
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Commandes
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("statut", statut_command))
     application.add_handler(CommandHandler("channels", channels_command))
     application.add_handler(CommandHandler("members", members_command))
     application.add_handler(CommandHandler("remove", remove_command))
@@ -4657,13 +2746,6 @@ async def main():
     application.add_handler(CommandHandler("disconnect", disconnect_command))
     application.add_handler(CommandHandler("telethon", telethon_status_command))
     application.add_handler(CommandHandler("scan", scan_command))
-    application.add_handler(CommandHandler("setaikey", setaikey_command))
-    application.add_handler(CommandHandler("listaikeys", listaikeys_command))
-    application.add_handler(CommandHandler("setmode", setmode_command))
-    application.add_handler(CommandHandler("checkquota", checkquota_command))
-    application.add_handler(CommandHandler("addadmin", addadmin_command))
-    application.add_handler(CommandHandler("removeadmin", removeadmin_command))
-    application.add_handler(CommandHandler("listadmins", listadmins_command))
 
     # Callbacks boutons
     application.add_handler(CallbackQueryHandler(button_callback))

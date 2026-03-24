@@ -1,64 +1,22 @@
 """
 Bot Telegram - Gestionnaire d'Accès Multi-Canal
-Configuration complète pour déploiement Render.com (port 10000)
-
-Variables d'environnement disponibles :
-  BOT_TOKEN              - Token du bot Telegram (obligatoire)
-  ADMINS                 - IDs admin séparés par virgule (ex: 123456,789012)
-  PORT                   - Port web (défaut: 10000)
-
-  -- Clés IA (plusieurs clés séparées par virgule) --
-  GEMINI_API_KEYS        - Clé(s) Google Gemini  (ex: AIzaSy...,AIzaSy...)
-  OPENAI_API_KEYS        - Clé(s) OpenAI          (ex: sk-...,sk-...)
-  GROQ_API_KEYS          - Clé(s) Groq             (ex: gsk_...,gsk_...)
-  DEEPSEEK_API_KEYS      - Clé(s) DeepSeek         (ex: sk-...,sk-...)
-  OCR_SPACE_API_KEY      - Clé OCR.space (secours vision)
-
-  -- Telethon (optionnel, scan membres complet) --
-  TELETHON_API_ID        - ID API Telethon
-  TELETHON_API_HASH      - Hash API Telethon
-  TELETHON_SESSION       - Chaîne de session Telethon
+Configuration pour déploiement Render.com (port 10000)
 """
 
 import os
 
-# ── Telegram ────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8442253971:AAEisYucgZ49Ej2b-mK9_6DhNrqh9WOc_XU")
 
-# ── Administrateurs ─────────────────────────────────────────────
-# IDs codés en dur : toujours reconnus comme admins, même sans var d'env
-DEFAULT_ADMINS = [1190237801]
-
-# On fusionne avec la variable d'env ADMINS (si définie)
-ADMINS_STR = os.getenv("ADMINS", "")
-_env_admins = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip().isdigit()]
-ADMINS = list({*DEFAULT_ADMINS, *_env_admins})  # union sans doublons
+ADMINS_STR = os.getenv("ADMINS", "1190237801")
+ADMINS = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip()]
 
 PORT = int(os.getenv("PORT", "10000"))
 
-# ── Données persistantes ────────────────────────────────────────
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCLIkisyBGwLq6GZccGcCijvCFzdzZczsU")
+
+TELETHON_API_ID = int(os.getenv("TELETHON_API_ID", "29177661"))
+TELETHON_API_HASH = os.getenv("TELETHON_API_HASH", "a8639172fa8d35dbfd8ea46286d349ab")
+TELETHON_SESSION = os.getenv("TELETHON_SESSION", "1BJWap1wBux_QLE6eCmOvh_-xu9dHUqu-zuZLWoAbVxHHyNt33g6LrBQ5uJzvaB-Pdfi0InFVtgMj94fNHdX2Kdm1GckTVjW4LYfoeMl0WVEYZXK0J1-RpmK2dAgq1DZBfHY5PhnYSj4jmecP6EnbyYKoe-PpJ4vmlzI0QAJo6-tajhYJ_RFH9JAdhjixa1_lHIjJVgZFyvMkYY02aZ4m0Dixt7dWAqg-4wM6NX-b70XAoKAfblX0V_AyP0M7hRf7Qzk8QjPP3xPeT-onO1HAjuubugPCscHp2YdPYMqQegQcb94IlVcLSxALV8k4IFGXdNi-UfCQI1HdyWlapNZxC_GmfnYCeSU=")
+
 DATA_FILE = "channels_data.json"
 CHECK_INTERVAL = 60
-
-# ── Clé Gemini principale (rétrocompat) ────────────────────────
-# Accepte GEMINI_API_KEY (ancienne) ou GEMINI_API_KEYS (nouvelle, multi)
-def _parse_keys(env_name_plural: str, env_name_single: str = "") -> list:
-    """Lit une var d'env contenant 0..N clés séparées par virgule."""
-    raw = os.getenv(env_name_plural, "") or os.getenv(env_name_single, "")
-    return [k.strip() for k in raw.split(",") if k.strip()]
-
-GEMINI_API_KEYS  = _parse_keys("GEMINI_API_KEYS",   "GEMINI_API_KEY")
-OPENAI_API_KEYS  = _parse_keys("OPENAI_API_KEYS",   "OPENAI_API_KEY")
-GROQ_API_KEYS    = _parse_keys("GROQ_API_KEYS",     "GROQ_API_KEY")
-DEEPSEEK_API_KEYS = _parse_keys("DEEPSEEK_API_KEYS","DEEPSEEK_API_KEY")
-OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
-
-# Alias rétrocompat (utilisé dans main.py)
-GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
-
-# ── Telethon (optionnel — scan membres complet) ─────────────────
-# API ID et Hash codés en dur : /connect fonctionne immédiatement
-# sans avoir à configurer de variables d'environnement sur Render
-TELETHON_API_ID   = int(os.getenv("TELETHON_API_ID", "29177661") or "29177661")
-TELETHON_API_HASH = os.getenv("TELETHON_API_HASH", "a8639172fa8d35dbfd8ea46286d349ab")
-TELETHON_SESSION  = os.getenv("TELETHON_SESSION", "")

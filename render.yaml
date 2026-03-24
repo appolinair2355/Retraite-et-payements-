@@ -1,31 +1,21 @@
 services:
   - type: web
-    name: assisnt-payement
+    name: baccarat-bot
     runtime: python
-    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
-    healthCheckPath: /health
     envVars:
       - key: PORT
-        value: "10000"
+        value: 10000
       - key: BOT_TOKEN
         sync: false
-      - key: ADMINS
-        sync: false
-      - key: GEMINI_API_KEYS
-        sync: false
-      - key: OPENAI_API_KEYS
-        sync: false
-      - key: GROQ_API_KEYS
-        sync: false
-      - key: DEEPSEEK_API_KEYS
-        sync: false
-      - key: OCR_SPACE_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
       - key: TELETHON_API_ID
         sync: false
       - key: TELETHON_API_HASH
         sync: false
       - key: TELETHON_SESSION
+        sync: false
+      - key: ADMINS
         sync: false
