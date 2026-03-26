@@ -6,3 +6,4 @@ cachetools
 aiolimiter
 google-genai
 telethon
+openai

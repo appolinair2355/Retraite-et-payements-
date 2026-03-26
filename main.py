@@ -62,6 +62,26 @@ pending_invites = {}
 # {user_id: True}
 assistance_mode = {}
 
+# État admin pour les flux de configuration interactive
+# {admin_id: {"action": str, ...}}
+admin_state = {}
+
+# Fournisseurs IA supportés
+AI_PROVIDERS = {
+    "gemini":   {"name": "Gemini",   "emoji": "🔵", "default_model": "gemini-2.5-flash-lite"},
+    "openai":   {"name": "OpenAI",   "emoji": "🟢", "default_model": "gpt-4o-mini"},
+    "groq":     {"name": "Groq",     "emoji": "🟠", "default_model": "llama-3.1-8b-instant"},
+    "deepseek": {"name": "DeepSeek", "emoji": "🔷", "default_model": "deepseek-chat"},
+}
+
+# Suivi des échecs de clés IA en mémoire
+# {(provider, api_key): {"until": timestamp, "reason": "quota"|"invalid"}}
+ai_key_failures = {}
+
+# Timestamp de la dernière alerte admin envoyée (évite le spam)
+_ai_alert_last_sent = 0
+_AI_ALERT_COOLDOWN = 1800  # Envoyer l'alerte au max toutes les 30 minutes
+
 # ═══════════════════════════════════════════════════════════════
 # GESTION DES DONNÉES
 # ═══════════════════════════════════════════════════════════════
@@ -322,44 +342,174 @@ STYLE
 - Pour les questions hors sujet, réponds brièvement et redirige.
 """
 
-async def ai_reply(user_id: int, user_message: str) -> str:
-    """Génère une réponse IA pour un utilisateur"""
-    if not gemini_client:
-        return (
-            "👋 Bonjour! Je suis le bot de gestion d'accès.\n\n"
-            "Contactez un administrateur pour obtenir l'accès aux canaux privés."
-        )
-    try:
-        uid = str(user_id)
-        history = conversation_history.get(uid, [])
+def get_keys_list(ai_config: dict, provider: str) -> list:
+    """Retourne la liste des clés pour un fournisseur (supporte string ou list)"""
+    keys_dict = ai_config.get("keys", {})
+    val = keys_dict.get(provider)
+    if val is None:
+        return [GEMINI_API_KEY] if (provider == "gemini" and GEMINI_API_KEY) else []
+    if isinstance(val, str):
+        return [val] if val else []
+    return [k for k in val if k]
 
-        # Construire les messages avec l'historique
+
+def _is_quota_error(error_str: str) -> bool:
+    return any(x in error_str for x in ["429", "quota", "rate limit", "exhausted", "resource_exhausted", "too many"])
+
+
+def _is_invalid_key_error(error_str: str) -> bool:
+    return any(x in error_str for x in ["401", "invalid api key", "api key not valid", "unauthorized", "permission_denied", "authentication"])
+
+
+async def _call_ai_provider(provider: str, api_key: str, history: list, user_message: str) -> str:
+    """Effectue un appel IA avec une clé spécifique. Lève une exception si échec."""
+    if provider == "gemini":
+        from google import genai as google_genai
+        client = google_genai.Client(api_key=api_key)
         contents = [{"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
                     {"role": "model", "parts": [{"text": "Bien compris, je suis prêt à aider."}]}]
         contents.extend(history)
         contents.append({"role": "user", "parts": [{"text": user_message}]})
-
         response = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: gemini_client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+            lambda: client.models.generate_content(
+                model=AI_PROVIDERS["gemini"]["default_model"],
                 contents=contents
             )
         )
-        reply_text = response.text
-
-        # Sauvegarder l'historique (max 10 échanges)
-        history.append({"role": "user", "parts": [{"text": user_message}]})
-        history.append({"role": "model", "parts": [{"text": reply_text}]})
-        conversation_history[uid] = history[-20:]
-
-        return reply_text
-    except Exception as e:
-        logger.error(f"Erreur IA pour {user_id}: {e}")
-        return (
-            "Désolé, je n'ai pas pu traiter votre message. "
-            "Contactez un administrateur pour plus d'informations."
+        return response.text
+    else:
+        import openai as openai_lib
+        base_urls = {
+            "openai": None,
+            "groq": "https://api.groq.com/openai/v1",
+            "deepseek": "https://api.deepseek.com",
+        }
+        client_kwargs = {"api_key": api_key}
+        if base_urls.get(provider):
+            client_kwargs["base_url"] = base_urls[provider]
+        oai_client = openai_lib.AsyncOpenAI(**client_kwargs)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for h in history:
+            role = h.get("role", "user")
+            content = h.get("parts", [{}])[0].get("text", "")
+            if role == "model":
+                role = "assistant"
+            messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_message})
+        response = await oai_client.chat.completions.create(
+            model=AI_PROVIDERS[provider]["default_model"],
+            messages=messages
         )
+        return response.choices[0].message.content
+
+
+async def check_single_ai_key(provider: str, api_key: str) -> tuple:
+    """Teste une clé IA. Retourne (succès: bool, message: str)."""
+    try:
+        result = await _call_ai_provider(provider, api_key, [], "test")
+        return True, "✅ Active et fonctionnelle"
+    except Exception as e:
+        err = str(e).lower()
+        if _is_quota_error(err):
+            return False, "⚠️ Quota épuisé"
+        elif _is_invalid_key_error(err):
+            return False, "❌ Clé invalide"
+        else:
+            short = str(e)[:60]
+            return False, f"❌ Erreur: {short}"
+
+
+async def _notify_admins_keys_exhausted(bot, provider: str, keys: list, current_time: int):
+    """Envoie une alerte privée aux admins quand toutes les clés sont épuisées."""
+    global _ai_alert_last_sent
+    if current_time - _ai_alert_last_sent < _AI_ALERT_COOLDOWN:
+        return
+    _ai_alert_last_sent = current_time
+
+    pinfo = AI_PROVIDERS.get(provider, {"name": provider, "emoji": "🤖"})
+    lines = [
+        f"🚨 **ALERTE — Clés IA épuisées**\n",
+        f"Fournisseur actif: {pinfo['emoji']} **{pinfo['name']}**",
+        f"Toutes les clés sont indisponibles:\n",
+    ]
+    for i, k in enumerate(keys):
+        short = k[:8] + "..." + k[-4:] if len(k) > 14 else k
+        failure = ai_key_failures.get((provider, k))
+        if failure:
+            reason = "Quota épuisé" if failure["reason"] == "quota" else "Clé invalide"
+            lines.append(f"  Clé {i+1} (`{short}`): ❌ {reason}")
+        else:
+            lines.append(f"  Clé {i+1} (`{short}`): ❌ Erreur inconnue")
+
+    lines.append("\n_Ajoutez de nouvelles clés via le panneau admin → ⚙️ Config IA._")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Gérer les clés IA", callback_data="admin_ai_config")]])
+    text = "\n".join(lines)
+
+    for admin_id in ADMINS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="Markdown", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"Erreur envoi alerte admin {admin_id}: {e}")
+
+
+async def _try_provider_keys(provider: str, keys: list, history: list, user_message: str, current_time: int) -> str | None:
+    """Essaie toutes les clés d'un fournisseur. Retourne la réponse ou None si toutes échouent."""
+    for api_key in keys:
+        failure = ai_key_failures.get((provider, api_key))
+        if failure and failure["until"] > current_time:
+            logger.info(f"[{provider}] Clé #{keys.index(api_key)+1} en cooldown → suivante")
+            continue
+        try:
+            reply_text = await _call_ai_provider(provider, api_key, history, user_message)
+            ai_key_failures.pop((provider, api_key), None)
+            return reply_text
+        except Exception as e:
+            err = str(e).lower()
+            key_idx = keys.index(api_key) + 1
+            if _is_quota_error(err):
+                ai_key_failures[(provider, api_key)] = {"until": current_time + 3600, "reason": "quota"}
+                logger.warning(f"[{provider}] Clé #{key_idx} quota épuisé → rotation")
+            elif _is_invalid_key_error(err):
+                ai_key_failures[(provider, api_key)] = {"until": current_time + 86400, "reason": "invalid"}
+                logger.warning(f"[{provider}] Clé #{key_idx} invalide → rotation")
+            else:
+                logger.error(f"[{provider}] Clé #{key_idx} erreur: {e}")
+    return None
+
+
+async def ai_reply(user_id: int, user_message: str, bot=None) -> str:
+    """Génère une réponse IA avec rotation automatique des clés et fallback inter-fournisseurs."""
+    data = load_data()
+    ai_config = data.get("ai_config", {})
+    active_provider = ai_config.get("provider", "gemini")
+    current_time = int(datetime.now().timestamp())
+    uid = str(user_id)
+    history = conversation_history.get(uid, [])
+
+    # Ordre de tentative : fournisseur actif en premier, puis les autres
+    providers_order = [active_provider] + [p for p in AI_PROVIDERS if p != active_provider]
+
+    for provider in providers_order:
+        keys = get_keys_list(ai_config, provider)
+        if not keys:
+            continue
+
+        reply_text = await _try_provider_keys(provider, keys, history, user_message, current_time)
+        if reply_text is not None:
+            if provider != active_provider:
+                logger.info(f"Fallback utilisé: {provider} (fournisseur principal {active_provider} épuisé)")
+            history.append({"role": "user", "parts": [{"text": user_message}]})
+            history.append({"role": "model", "parts": [{"text": reply_text}]})
+            conversation_history[uid] = history[-20:]
+            return reply_text
+
+    # Tous les fournisseurs ont échoué — alerter les admins
+    if bot:
+        active_keys = get_keys_list(ai_config, active_provider)
+        asyncio.create_task(_notify_admins_keys_exhausted(bot, active_provider, active_keys, current_time))
+
+    return "L'assistant est temporairement indisponible. Contactez l'administrateur."
 
 
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -371,6 +521,148 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text
     if not text:
         return
+
+    # 0. Intercepter les états admin (configuration interactive)
+    if is_admin(user.id) and user.id in admin_state:
+        state = admin_state[user.id]
+        action = state.get("action")
+
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Retour Admin", callback_data="admin_panel")]])
+
+        if action == "await_ai_key":
+            provider = state.get("provider")
+            api_key = text.strip()
+            data = load_data()
+            if "ai_config" not in data:
+                data["ai_config"] = {}
+            if "keys" not in data["ai_config"]:
+                data["ai_config"]["keys"] = {}
+            existing = get_keys_list(data["ai_config"], provider)
+            if api_key not in existing:
+                existing.append(api_key)
+            data["ai_config"]["keys"][provider] = existing
+            data["ai_config"]["provider"] = provider
+            save_data(data)
+            admin_state.pop(user.id, None)
+            prov_info = AI_PROVIDERS.get(provider, {})
+            await update.message.reply_text(
+                f"✅ **Clé {prov_info.get('name', provider)} ajoutée!**\n\n"
+                f"{prov_info.get('emoji', '🤖')} Fournisseur actif: **{prov_info.get('name', provider)}**\n"
+                f"🔑 Total clés: **{len(existing)}**\n\n"
+                f"L'assistant IA utilisera maintenant **{prov_info.get('name', provider)}** avec rotation automatique.",
+                reply_markup=cancel_kb,
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "await_add_ai_key":
+            provider = state.get("provider")
+            api_key = text.strip()
+            data = load_data()
+            if "ai_config" not in data:
+                data["ai_config"] = {}
+            if "keys" not in data["ai_config"]:
+                data["ai_config"]["keys"] = {}
+            existing = get_keys_list(data["ai_config"], provider)
+            if api_key in existing:
+                await update.message.reply_text("⚠️ Cette clé est déjà configurée.", reply_markup=cancel_kb)
+                return
+            existing.append(api_key)
+            data["ai_config"]["keys"][provider] = existing
+            save_data(data)
+            admin_state.pop(user.id, None)
+            prov_info = AI_PROVIDERS.get(provider, {})
+            await update.message.reply_text(
+                f"✅ **Clé #{len(existing)} ajoutée pour {prov_info.get('name', provider)}!**\n\n"
+                f"🔑 Total clés configurées: **{len(existing)}**\n\n"
+                f"La rotation automatique est active.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"⚙️ Gérer les clés {prov_info.get('name', provider)}", callback_data=f"admin_ai_keys_{provider}")
+                ]]),
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "await_renew_ai_key":
+            provider = state.get("provider")
+            idx = state.get("index", 0)
+            new_key = text.strip()
+            data = load_data()
+            if "ai_config" not in data:
+                data["ai_config"] = {}
+            existing = get_keys_list(data["ai_config"], provider)
+            if new_key in existing:
+                await update.message.reply_text("⚠️ Cette clé est déjà dans la liste.", reply_markup=cancel_kb)
+                return
+            old_key = existing[idx] if 0 <= idx < len(existing) else None
+            if old_key:
+                ai_key_failures.pop((provider, old_key), None)
+                existing[idx] = new_key
+            else:
+                existing.append(new_key)
+            data["ai_config"].setdefault("keys", {})[provider] = existing
+            save_data(data)
+            admin_state.pop(user.id, None)
+            prov_info = AI_PROVIDERS.get(provider, {})
+            await update.message.reply_text(
+                f"✅ **Clé {idx+1} renouvelée — {prov_info.get('emoji','🤖')} {prov_info.get('name', provider)}!**\n\n"
+                f"L'ancienne clé expirée a été remplacée.\n"
+                f"🔑 Total clés: **{len(existing)}**",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"⚙️ Gérer les clés {prov_info.get('name', provider)}", callback_data=f"admin_ai_keys_{provider}")
+                ]]),
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "await_grant_args":
+            args = text.strip().split()
+            admin_state.pop(user.id, None)
+            context.args = args
+            await grant_command(update, context)
+            return
+
+        elif action == "await_extend_args":
+            args = text.strip().split()
+            admin_state.pop(user.id, None)
+            context.args = args
+            await extend_command(update, context)
+            return
+
+        elif action == "await_remove_args":
+            args = text.strip().split()
+            admin_state.pop(user.id, None)
+            context.args = args
+            await remove_command(update, context)
+            return
+
+        elif action == "await_members_args":
+            args = text.strip().split()
+            admin_state.pop(user.id, None)
+            context.args = args
+            await members_command(update, context)
+            return
+
+        elif action == "await_setdur_args":
+            args = text.strip().split()
+            admin_state.pop(user.id, None)
+            context.args = args
+            await setduration_command(update, context)
+            return
+
+        elif action == "await_unblock_args":
+            args = text.strip().split()
+            admin_state.pop(user.id, None)
+            context.args = args
+            await unblock_command(update, context)
+            return
+
+        elif action == "await_scan_args":
+            args = text.strip().split()
+            admin_state.pop(user.id, None)
+            context.args = args
+            await scan_command(update, context)
+            return
 
     # 1. Intercepter l'auth Telethon (admin uniquement)
     if is_admin(user.id) and user.id in telethon_manager.auth_state:
@@ -403,7 +695,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Indiquer que le bot est en train d'écrire
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    response = await ai_reply(user.id, text)
+    response = await ai_reply(user.id, text, bot=context.bot)
 
     # Bouton "Retourner à l'accueil" après chaque réponse
     home_keyboard = [[InlineKeyboardButton("🏠 Retourner à l'accueil", callback_data="home")]]
@@ -446,12 +738,14 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                      InlineKeyboardButton("⏱ 48h",   callback_data=f"setdef_{cid}_172800")],
                     [InlineKeyboardButton("📅 7 jours",  callback_data=f"setdef_{cid}_604800"),
                      InlineKeyboardButton("📅 1 mois",   callback_data=f"setdef_{cid}_2592000")],
+                    [InlineKeyboardButton("🏠 Panneau Admin", callback_data="admin_panel")],
                 ]
                 await context.bot.send_message(
                     admin_id,
-                    f"✅ **Bot ajouté au canal!**\n\n"
+                    f"✅ **Nouveau canal détecté!**\n\n"
                     f"📢 **Canal:** {chat.title}\n"
                     f"🆔 **ID:** `{chat.id}`\n\n"
+                    f"Le canal a été ajouté automatiquement à la liste.\n"
                     f"⚙️ Choisissez la durée d'accès **par défaut** pour ce canal:",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="Markdown"
@@ -735,6 +1029,117 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # CALLBACKS (Boutons)
 # ═══════════════════════════════════════════════════════════════
 
+def build_admin_panel(data):
+    """Construit le panneau admin avec tous les boutons"""
+    ai_config = data.get("ai_config", {})
+    provider = ai_config.get("provider", "gemini")
+    prov_info = AI_PROVIDERS.get(provider, AI_PROVIDERS["gemini"])
+    ai_enabled = data.get("ai_enabled", True)
+    text = (
+        "👋 **Panneau Administrateur**\n\n"
+        f"🤖 IA: {prov_info['emoji']} **{prov_info['name']}** | "
+        f"{'✅ Activée' if ai_enabled else '⭕ Désactivée'}\n\n"
+        "Sélectionnez une action:"
+    )
+    keyboard = [
+        [InlineKeyboardButton("📋 Canaux", callback_data="admin_channels"),
+         InlineKeyboardButton("👥 Membres", callback_data="admin_members_ask")],
+        [InlineKeyboardButton("✅ Accorder accès", callback_data="admin_grant_ask"),
+         InlineKeyboardButton("⏫ Prolonger", callback_data="admin_extend_ask")],
+        [InlineKeyboardButton("❌ Retirer membre", callback_data="admin_remove_ask"),
+         InlineKeyboardButton("🔓 Débloquer", callback_data="admin_unblock_ask")],
+        [InlineKeyboardButton("⏱ Durée défaut", callback_data="admin_setdur_ask"),
+         InlineKeyboardButton("🔍 Scanner canal", callback_data="admin_scan_ask")],
+        [InlineKeyboardButton("🤖 Activer IA", callback_data="admin_ai_on"),
+         InlineKeyboardButton("⭕ Désactiver IA", callback_data="admin_ai_off"),
+         InlineKeyboardButton("⚙️ Config IA", callback_data="admin_ai_config")],
+        [InlineKeyboardButton("🔌 Connecter Telethon", callback_data="admin_telethon_connect"),
+         InlineKeyboardButton("📡 Statut Telethon", callback_data="admin_telethon_status")],
+        [InlineKeyboardButton("💳 Payer", callback_data="pay_start"),
+         InlineKeyboardButton("🎁 Bonus", callback_data="bonus_start"),
+         InlineKeyboardButton("💬 Assistance", callback_data="assist_start")],
+        [InlineKeyboardButton("📖 Aide", callback_data="admin_help")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def build_ai_config_panel(data):
+    """Construit le panneau de configuration IA"""
+    ai_config = data.get("ai_config", {})
+    current_provider = ai_config.get("provider", "gemini")
+    lines = ["⚙️ **Configuration de l'Assistant IA**\n"]
+    for pid, pinfo in AI_PROVIDERS.items():
+        keys = get_keys_list(ai_config, pid)
+        n = len(keys)
+        if pid == current_provider:
+            status = f"✅ **Actif** — {n} clé(s)"
+        elif n > 0:
+            status = f"🔑 {n} clé(s)"
+        else:
+            status = "➕ Aucune clé"
+        lines.append(f"{pinfo['emoji']} **{pinfo['name']}** — {status}")
+    lines.append("\n_Appuyez sur un fournisseur pour gérer ses clés ou l'activer:_")
+    keyboard = [
+        [InlineKeyboardButton("🔵 Gemini", callback_data="admin_ai_keys_gemini"),
+         InlineKeyboardButton("🟢 OpenAI", callback_data="admin_ai_keys_openai")],
+        [InlineKeyboardButton("🟠 Groq", callback_data="admin_ai_keys_groq"),
+         InlineKeyboardButton("🔷 DeepSeek", callback_data="admin_ai_keys_deepseek")],
+        [InlineKeyboardButton("🔍 Tester toutes les clés", callback_data="admin_ai_testall")],
+        [InlineKeyboardButton("← Retour", callback_data="admin_panel")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+async def build_ai_keys_panel(data: dict, provider: str) -> tuple:
+    """Construit le panneau de gestion des clés pour un fournisseur."""
+    ai_config = data.get("ai_config", {})
+    current_provider = ai_config.get("provider", "gemini")
+    pinfo = AI_PROVIDERS[provider]
+    keys = get_keys_list(ai_config, provider)
+    current_time = int(datetime.now().timestamp())
+
+    lines = [f"{pinfo['emoji']} **Clés {pinfo['name']}**\n"]
+    if not keys:
+        lines.append("_Aucune clé configurée._")
+    else:
+        for i, k in enumerate(keys):
+            short = k[:8] + "..." + k[-4:] if len(k) > 14 else k
+            failure = ai_key_failures.get((provider, k))
+            if failure and failure["until"] > current_time:
+                if failure["reason"] == "quota":
+                    status = "⏳ Quota épuisé"
+                else:
+                    status = "❌ Expirée / Invalide"
+            else:
+                status = "✅ Active"
+            lines.append(f"**Clé {i+1}:** `{short}` — {status}")
+
+    is_active = current_provider == provider
+    keyboard = []
+    for i, k in enumerate(keys):
+        failure = ai_key_failures.get((provider, k))
+        is_expired = failure and failure["until"] > current_time
+        if is_expired:
+            # Clé expirée : proposer Renouveler et Supprimer
+            keyboard.append([
+                InlineKeyboardButton(f"🔄 Renouveler clé {i+1}", callback_data=f"admin_ai_renew_{provider}_{i}"),
+                InlineKeyboardButton(f"🗑", callback_data=f"admin_ai_rmkey_{provider}_{i}"),
+            ])
+        else:
+            # Clé active : juste supprimer
+            keyboard.append([
+                InlineKeyboardButton(f"🗑 Supprimer clé {i+1}", callback_data=f"admin_ai_rmkey_{provider}_{i}")
+            ])
+    keyboard.append([InlineKeyboardButton("➕ Ajouter une clé", callback_data=f"admin_ai_addkey_{provider}")])
+    if not is_active and keys:
+        keyboard.append([InlineKeyboardButton(f"✅ Activer {pinfo['name']}", callback_data=f"admin_ai_activate_{provider}")])
+    if keys:
+        keyboard.append([InlineKeyboardButton("🔍 Tester les clés", callback_data=f"admin_ai_test_{provider}")])
+    keyboard.append([InlineKeyboardButton("← Retour Config IA", callback_data="admin_ai_config")])
+
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -767,30 +1172,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "home":
         user = update.effective_user
-        # Désactiver le mode assistance
         assistance_mode.pop(user.id, None)
         conversation_history.pop(str(user.id), None)
-
+        admin_state.pop(user.id, None)
         await query.edit_message_text("✅ Session terminée.")
-
-        # Afficher le menu principal
-        user_keyboard = [
-            [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
-            [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
-            [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
-            [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
-        ]
-        await context.bot.send_message(
-            user.id,
-            f"🏠 **Menu principal**\n\n"
-            f"Que souhaitez-vous faire ?\n\n"
-            f"• 📊 Vérifier votre **durée restante** d'accès\n"
-            f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
-            f"• 🎁 Demander un accès gratuit (bonus)\n"
-            f"• 💬 Contacter l'assistance",
-            reply_markup=InlineKeyboardMarkup(user_keyboard),
-            parse_mode="Markdown"
-        )
+        if is_admin(user.id):
+            data = load_data()
+            text, kb = build_admin_panel(data)
+            await context.bot.send_message(user.id, text, reply_markup=kb, parse_mode="Markdown")
+        else:
+            user_keyboard = [
+                [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
+                [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
+                [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
+                [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
+            ]
+            await context.bot.send_message(
+                user.id,
+                f"🏠 **Menu principal**\n\n"
+                f"• 📊 Vérifier votre **durée restante** d'accès\n"
+                f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
+                f"• 🎁 Demander un accès gratuit (bonus)\n"
+                f"• 💬 Contacter l'assistance",
+                reply_markup=InlineKeyboardMarkup(user_keyboard),
+                parse_mode="Markdown"
+            )
         return
 
     # ── Callbacks accessibles à tous les utilisateurs ─────────────────
@@ -836,21 +1242,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "back_main":
         user = update.effective_user
-        user_keyboard = [
-            [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
-            [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
-            [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
-            [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
-        ]
-        await query.edit_message_text(
-            f"🏠 **Menu principal**\n\n"
-            f"• 📊 Vérifier votre **durée restante** d'accès\n"
-            f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
-            f"• 🎁 Demander un accès gratuit (bonus)\n"
-            f"• 💬 Contacter l'assistance",
-            reply_markup=InlineKeyboardMarkup(user_keyboard),
-            parse_mode="Markdown"
-        )
+        admin_state.pop(user.id, None)
+        if is_admin(user.id):
+            data = load_data()
+            text, kb = build_admin_panel(data)
+            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        else:
+            user_keyboard = [
+                [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
+                [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
+                [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
+                [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
+            ]
+            await query.edit_message_text(
+                f"🏠 **Menu principal**\n\n"
+                f"• 📊 Vérifier votre **durée restante** d'accès\n"
+                f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
+                f"• 🎁 Demander un accès gratuit (bonus)\n"
+                f"• 💬 Contacter l'assistance",
+                reply_markup=InlineKeyboardMarkup(user_keyboard),
+                parse_mode="Markdown"
+            )
         return
 
     if query.data == "pay_start":
@@ -1139,6 +1551,341 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
+    # ── Panneau Admin ──────────────────────────────────────────────
+    if query.data == "admin_panel":
+        data = load_data()
+        text, kb = build_admin_panel(data)
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if query.data == "admin_channels":
+        data = load_data()
+        channels = data.get("channels", {})
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Retour", callback_data="admin_panel")]])
+        if not channels:
+            await query.edit_message_text("📋 Aucun canal géré.", reply_markup=back_kb)
+            return
+        current_time = int(datetime.now().timestamp())
+        msg = "📋 **Canaux gérés:**\n\n"
+        for cid, ch in channels.items():
+            members = ch.get("members", {})
+            active = sum(1 for m in members.values() if m.get("expires_at", 0) > current_time)
+            expired = len(members) - active
+            default_secs = ch.get("default_duration_seconds", 86400)
+            dur_label = format_duration_label(default_secs)
+            msg += (
+                f"📢 **{ch.get('name', cid)}**\n"
+                f"   🆔 `{cid}`\n"
+                f"   👥 {active} actif(s) | 🔴 {expired} expiré(s)\n"
+                f"   ⏱ Défaut: {dur_label}\n\n"
+            )
+        await query.edit_message_text(msg, reply_markup=back_kb, parse_mode="Markdown")
+        return
+
+    if query.data == "admin_members_ask":
+        admin_state[update.effective_user.id] = {"action": "await_members_args"}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="admin_panel")]])
+        await query.edit_message_text(
+            "👥 **Voir les membres**\n\nEnvoyez l'**ID du canal**:\n`<id_canal>`\n\nEx: `-1001234567890`",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_grant_ask":
+        admin_state[update.effective_user.id] = {"action": "await_grant_args"}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="admin_panel")]])
+        await query.edit_message_text(
+            "✅ **Accorder accès**\n\nEnvoyez:\n`<id_canal> <id_user> <heures>`\n\nEx: `-1001234567890 987654321 24`",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_extend_ask":
+        admin_state[update.effective_user.id] = {"action": "await_extend_args"}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="admin_panel")]])
+        await query.edit_message_text(
+            "⏫ **Prolonger l'accès**\n\nEnvoyez:\n`<id_canal> <id_user> <heures>`\n\nEx: `-1001234567890 987654321 48`",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_remove_ask":
+        admin_state[update.effective_user.id] = {"action": "await_remove_args"}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="admin_panel")]])
+        await query.edit_message_text(
+            "❌ **Retirer un membre**\n\nEnvoyez:\n`<id_canal> <id_user>`\n\nEx: `-1001234567890 987654321`",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_unblock_ask":
+        admin_state[update.effective_user.id] = {"action": "await_unblock_args"}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="admin_panel")]])
+        await query.edit_message_text(
+            "🔓 **Débloquer un utilisateur**\n\nEnvoyez:\n`<id_canal> <id_user>`\n\nEx: `-1001234567890 987654321`",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_setdur_ask":
+        admin_state[update.effective_user.id] = {"action": "await_setdur_args"}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="admin_panel")]])
+        await query.edit_message_text(
+            "⏱ **Durée par défaut**\n\nEnvoyez:\n`<id_canal> <heures>`\n\nEx: `-1001234567890 24`",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_scan_ask":
+        admin_state[update.effective_user.id] = {"action": "await_scan_args"}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="admin_panel")]])
+        await query.edit_message_text(
+            "🔍 **Scanner un canal**\n\nEnvoyez l'**ID du canal**:\n`<id_canal>`\n\nEx: `-1001234567890`",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_ai_on":
+        data = load_data()
+        data["ai_enabled"] = True
+        save_data(data)
+        text, kb = build_admin_panel(data)
+        await query.edit_message_text("✅ **Assistant IA activé!**\n\n" + text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if query.data == "admin_ai_off":
+        data = load_data()
+        data["ai_enabled"] = False
+        save_data(data)
+        text, kb = build_admin_panel(data)
+        await query.edit_message_text("⭕ **Assistant IA désactivé.**\n\n" + text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if query.data == "admin_ai_config":
+        data = load_data()
+        text, kb = build_ai_config_panel(data)
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # Gestion des clés par fournisseur: admin_ai_keys_<provider>
+    if action == "admin" and len(parts) >= 4 and parts[1] == "ai" and parts[2] == "keys":
+        provider = parts[3]
+        if provider not in AI_PROVIDERS:
+            await query.answer("Fournisseur inconnu.", show_alert=True)
+            return
+        data = load_data()
+        text, kb = await build_ai_keys_panel(data, provider)
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # Ajouter une clé: admin_ai_addkey_<provider>
+    if action == "admin" and len(parts) >= 4 and parts[1] == "ai" and parts[2] == "addkey":
+        provider = parts[3]
+        if provider not in AI_PROVIDERS:
+            await query.answer("Fournisseur inconnu.", show_alert=True)
+            return
+        pinfo = AI_PROVIDERS[provider]
+        admin_state[update.effective_user.id] = {"action": "await_add_ai_key", "provider": provider}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data=f"admin_ai_keys_{provider}")]])
+        await query.edit_message_text(
+            f"➕ **Ajouter une clé {pinfo['emoji']} {pinfo['name']}**\n\n"
+            f"Envoyez votre clé API dans ce chat.\n"
+            f"Elle sera ajoutée à la liste — la rotation automatique s'active quand il y a plusieurs clés.\n\n"
+            f"⚠️ Ne partagez jamais vos clés API.",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    # Supprimer une clé: admin_ai_rmkey_<provider>_<index>
+    if action == "admin" and len(parts) >= 5 and parts[1] == "ai" and parts[2] == "rmkey":
+        provider = parts[3]
+        idx = int(parts[4])
+        if provider not in AI_PROVIDERS:
+            await query.answer("Fournisseur inconnu.", show_alert=True)
+            return
+        data = load_data()
+        keys = get_keys_list(data.get("ai_config", {}), provider)
+        if 0 <= idx < len(keys):
+            removed = keys.pop(idx)
+            ai_key_failures.pop((provider, removed), None)
+            if "ai_config" not in data:
+                data["ai_config"] = {}
+            data["ai_config"].setdefault("keys", {})[provider] = keys
+            save_data(data)
+            await query.answer(f"Clé {idx+1} supprimée.", show_alert=False)
+        text, kb = await build_ai_keys_panel(data, provider)
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # Renouveler une clé expirée: admin_ai_renew_<provider>_<index>
+    if action == "admin" and len(parts) >= 5 and parts[1] == "ai" and parts[2] == "renew":
+        provider = parts[3]
+        idx = int(parts[4])
+        if provider not in AI_PROVIDERS:
+            await query.answer("Fournisseur inconnu.", show_alert=True)
+            return
+        pinfo = AI_PROVIDERS[provider]
+        admin_state[update.effective_user.id] = {"action": "await_renew_ai_key", "provider": provider, "index": idx}
+        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data=f"admin_ai_keys_{provider}")]])
+        await query.edit_message_text(
+            f"🔄 **Renouveler la clé {idx+1} — {pinfo['emoji']} {pinfo['name']}**\n\n"
+            f"Envoyez la nouvelle clé API dans ce chat.\n"
+            f"Elle remplacera l'ancienne clé expirée.\n\n"
+            f"⚠️ Ne partagez jamais vos clés API.",
+            reply_markup=cancel_kb, parse_mode="Markdown"
+        )
+        return
+
+    # Activer un fournisseur: admin_ai_activate_<provider>
+    if action == "admin" and len(parts) >= 4 and parts[1] == "ai" and parts[2] == "activate":
+        provider = parts[3]
+        if provider not in AI_PROVIDERS:
+            await query.answer("Fournisseur inconnu.", show_alert=True)
+            return
+        data = load_data()
+        if "ai_config" not in data:
+            data["ai_config"] = {}
+        data["ai_config"]["provider"] = provider
+        save_data(data)
+        pinfo = AI_PROVIDERS[provider]
+        await query.answer(f"{pinfo['emoji']} {pinfo['name']} activé!", show_alert=False)
+        text, kb = await build_ai_keys_panel(data, provider)
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # Tester les clés d'un fournisseur: admin_ai_test_<provider>
+    if action == "admin" and len(parts) >= 4 and parts[1] == "ai" and parts[2] == "test":
+        provider = parts[3]
+        if provider not in AI_PROVIDERS:
+            await query.answer("Fournisseur inconnu.", show_alert=True)
+            return
+        data = load_data()
+        keys = get_keys_list(data.get("ai_config", {}), provider)
+        pinfo = AI_PROVIDERS[provider]
+        if not keys:
+            await query.answer("Aucune clé configurée.", show_alert=True)
+            return
+        await query.edit_message_text(f"🔍 Test des clés {pinfo['name']} en cours...", parse_mode="Markdown")
+        lines = [f"🔍 **Résultats — {pinfo['emoji']} {pinfo['name']}**\n"]
+        for i, k in enumerate(keys):
+            short = k[:8] + "..." + k[-4:] if len(k) > 14 else k
+            ok, msg = await check_single_ai_key(provider, k)
+            if not ok and _is_quota_error(msg.lower()):
+                ai_key_failures[(provider, k)] = {"until": int(datetime.now().timestamp()) + 3600, "reason": "quota"}
+            elif not ok and _is_invalid_key_error(msg.lower()):
+                ai_key_failures[(provider, k)] = {"until": int(datetime.now().timestamp()) + 86400, "reason": "invalid"}
+            else:
+                ai_key_failures.pop((provider, k), None)
+            lines.append(f"**Clé {i+1}** (`{short}`): {msg}")
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"← Retour", callback_data=f"admin_ai_keys_{provider}")]])
+        await query.edit_message_text("\n".join(lines), reply_markup=back_kb, parse_mode="Markdown")
+        return
+
+    # Tester TOUTES les clés de tous les fournisseurs
+    if query.data == "admin_ai_testall":
+        data = load_data()
+        await query.edit_message_text("🔍 Test de toutes les clés en cours...\n_Cela peut prendre quelques secondes._", parse_mode="Markdown")
+        lines = ["🔍 **Rapport de toutes les clés IA**\n"]
+        any_key = False
+        for pid, pinfo in AI_PROVIDERS.items():
+            keys = get_keys_list(data.get("ai_config", {}), pid)
+            if not keys:
+                continue
+            any_key = True
+            lines.append(f"\n{pinfo['emoji']} **{pinfo['name']}** ({len(keys)} clé(s)):")
+            for i, k in enumerate(keys):
+                short = k[:8] + "..." + k[-4:] if len(k) > 14 else k
+                ok, msg = await check_single_ai_key(pid, k)
+                if not ok and "quota" in msg.lower():
+                    ai_key_failures[(pid, k)] = {"until": int(datetime.now().timestamp()) + 3600, "reason": "quota"}
+                elif not ok and ("invalide" in msg.lower() or "invalid" in msg.lower()):
+                    ai_key_failures[(pid, k)] = {"until": int(datetime.now().timestamp()) + 86400, "reason": "invalid"}
+                else:
+                    ai_key_failures.pop((pid, k), None)
+                lines.append(f"  Clé {i+1} (`{short}`): {msg}")
+        if not any_key:
+            lines.append("Aucune clé configurée.")
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Retour Config IA", callback_data="admin_ai_config")]])
+        await query.edit_message_text("\n".join(lines), reply_markup=back_kb, parse_mode="Markdown")
+        return
+
+    if action == "admin" and len(parts) >= 3 and parts[1] == "ai" and parts[2] == "provider":
+        provider = parts[3] if len(parts) > 3 else None
+        if provider not in AI_PROVIDERS:
+            await query.answer("Fournisseur inconnu.", show_alert=True)
+            return
+        prov_info = AI_PROVIDERS[provider]
+        admin_state[update.effective_user.id] = {"action": "await_ai_key", "provider": provider}
+        cancel_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Annuler", callback_data="admin_ai_config")]
+        ])
+        await query.edit_message_text(
+            f"🔑 **Configuration {prov_info['emoji']} {prov_info['name']}**\n\n"
+            f"Envoyez votre clé API **{prov_info['name']}** dans ce chat.\n\n"
+            f"_Cette clé sera sauvegardée et utilisée pour l'assistant IA._\n\n"
+            f"⚠️ Ne partagez jamais vos clés API.",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "admin_telethon_status":
+        connected = await telethon_manager.is_connected()
+        if connected:
+            try:
+                client = telethon_manager.get_client()
+                me = await client.get_me()
+                status_msg = (
+                    f"📡 **Statut Telethon**\n\n"
+                    f"✅ Connecté: **{me.first_name}** (@{me.username or me.id})\n\n"
+                    f"Telethon est opérationnel."
+                )
+            except Exception:
+                status_msg = "✅ **Telethon connecté** (détails indisponibles)"
+        else:
+            status_msg = (
+                "❌ **Telethon non connecté**\n\n"
+                "Utilisez le bouton 🔌 Connecter pour l'authentifier."
+            )
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Retour", callback_data="admin_panel")]])
+        await query.edit_message_text(status_msg, reply_markup=back_kb, parse_mode="Markdown")
+        return
+
+    if query.data == "admin_telethon_connect":
+        await query.edit_message_text("🔌 Lancement de la connexion Telethon...")
+        if not TELETHON_API_ID or not TELETHON_API_HASH:
+            back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Retour", callback_data="admin_panel")]])
+            await context.bot.send_message(
+                update.effective_user.id,
+                "❌ **API Telethon non configurée.**\n\nAjoutez les secrets `TELETHON_API_ID` et `TELETHON_API_HASH`.\n\nObtenez-les sur https://my.telegram.org",
+                reply_markup=back_kb, parse_mode="Markdown"
+            )
+            return
+        msg = await telethon_manager.start_auth(update.effective_user.id)
+        await context.bot.send_message(update.effective_user.id, msg, parse_mode="Markdown")
+        return
+
+    if query.data == "admin_help":
+        text = (
+            "📖 **Aide — Commandes Admin**\n\n"
+            "**Depuis les boutons:**\n"
+            "• 📋 **Canaux** — Liste des canaux gérés\n"
+            "• 👥 **Membres** — Membres + temps restant (saisir ID canal)\n"
+            "• ✅ **Accorder accès** — Donner accès (saisir canal, user, heures)\n"
+            "• ⏫ **Prolonger** — Rallonger l'accès existant\n"
+            "• ❌ **Retirer** — Retirer un membre\n"
+            "• 🔓 **Débloquer** — Débloquer un utilisateur banni\n"
+            "• ⏱ **Durée défaut** — Changer la durée par défaut d'un canal\n"
+            "• 🔍 **Scanner** — Rescanner un canal\n"
+            "• ⚙️ **Config IA** — Choisir le fournisseur IA et configurer la clé API\n"
+            "• 🔌 **Telethon** — Connecter votre compte Telegram\n\n"
+            "**Fournisseurs IA supportés:**\n"
+            "🔵 Gemini | 🟢 OpenAI | 🟠 Groq | 🔷 DeepSeek"
+        )
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Retour", callback_data="admin_panel")]])
+        await query.edit_message_text(text, reply_markup=back_kb, parse_mode="Markdown")
+        return
+
     if action == "setdef":
         cid = parts[1]
         duration_seconds = int(parts[2])
@@ -1337,32 +2084,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if is_admin(user_id):
-        ai_status = "✅ Active" if gemini_client else "❌ Non configurée (GEMINI_API_KEY manquant)"
         data = load_data()
-        ai_toggle = data.get("ai_enabled", True)
-        admin_keyboard = [
-            [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
-            [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
-            [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
-        ]
-        await update.message.reply_text(
-            "👋 **Bienvenue, Administrateur!**\n\n"
-            "📋 **Commandes membres:**\n"
-            "• `/channels` — Liste des canaux\n"
-            "• `/members <id_canal>` — Membres + temps restant\n"
-            "• `/extend <id_canal> <id_user> <heures>` — Rallonger l'accès\n"
-            "• `/grant <id_canal> <id_user> <heures>` — Accorder l'accès\n"
-            "• `/remove <id_canal> <id_user>` — Retirer un membre\n"
-            "• `/unblock <id_canal> <id_user>` — Débloquer\n\n"
-            "📋 **Autres commandes:**\n"
-            "• `/setduration <id_canal> <heures>` — Durée par défaut\n"
-            "• `/bonus` — Accorder accès sans paiement\n"
-            "• `/ai_on` / `/ai_off` — IA assistant\n"
-            "• `/help` — Aide complète\n\n"
-            f"🤖 **IA:** {ai_status} | **Activée:** {'Oui' if ai_toggle else 'Non'}",
-            reply_markup=InlineKeyboardMarkup(admin_keyboard),
-            parse_mode="Markdown"
-        )
+        text, kb = build_admin_panel(data)
+        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
         user_keyboard = [
             [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
@@ -2721,31 +3445,50 @@ async def check_expirations_task(application: Application):
 # FONCTION PRINCIPALE
 # ═══════════════════════════════════════════════════════════════
 
+async def startup_channel_scan(bot):
+    """Au démarrage, vérifie et met à jour la liste des canaux déjà enregistrés."""
+    data = load_data()
+    channels = data.get("channels", {})
+    if not channels:
+        logger.info("🔍 Démarrage: aucun canal enregistré.")
+        return
+
+    to_remove = []
+    updated = False
+    for cid, ch in list(channels.items()):
+        try:
+            chat = await bot.get_chat(int(cid))
+            new_name = chat.title or ch.get("name", f"Canal {cid}")
+            if ch.get("name") != new_name:
+                ch["name"] = new_name
+                updated = True
+            member = await bot.get_chat_member(int(cid), bot.id)
+            if member.status in (ChatMember.LEFT, ChatMember.BANNED):
+                to_remove.append(cid)
+                logger.warning(f"⚠️ Canal {cid} retiré (bot exclu ou banni).")
+            else:
+                logger.info(f"✅ Canal actif: {ch['name']} ({cid})")
+        except Exception as e:
+            logger.warning(f"Canal {cid} inaccessible au démarrage: {e}")
+
+    for cid in to_remove:
+        del data["channels"][cid]
+
+    if to_remove or updated:
+        save_data(data)
+
+    active = len(channels) - len(to_remove)
+    logger.info(f"🔍 Scan démarrage terminé: {active} canal(aux) actif(s) sur {len(channels)} enregistré(s).")
+
+
 async def main():
     logger.info("🤖 Démarrage du bot multi-canal...")
 
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Commandes
+    # Seule commande disponible: /start (ouvre le menu principal pour tout le monde)
+    # Toutes les actions admin passent par les boutons inline
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("statut", statut_command))
-    application.add_handler(CommandHandler("channels", channels_command))
-    application.add_handler(CommandHandler("members", members_command))
-    application.add_handler(CommandHandler("remove", remove_command))
-    application.add_handler(CommandHandler("setduration", setduration_command))
-    application.add_handler(CommandHandler("ai_on", ai_on_command))
-    application.add_handler(CommandHandler("ai_off", ai_off_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("payer", payer_command))
-    application.add_handler(CommandHandler("annuler", annuler_command))
-    application.add_handler(CommandHandler("grant", grant_command))
-    application.add_handler(CommandHandler("extend", extend_command))
-    application.add_handler(CommandHandler("bonus", bonus_command))
-    application.add_handler(CommandHandler("unblock", unblock_command))
-    application.add_handler(CommandHandler("connect", connect_command))
-    application.add_handler(CommandHandler("disconnect", disconnect_command))
-    application.add_handler(CommandHandler("telethon", telethon_status_command))
-    application.add_handler(CommandHandler("scan", scan_command))
 
     # Callbacks boutons
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -2760,7 +3503,7 @@ async def main():
         handle_payment_photo
     ))
 
-    # Messages utilisateurs (réponse IA) — uniquement dans les chats privés, hors commandes
+    # Messages utilisateurs (réponse IA, saisies admin) — uniquement chats privés
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_user_message
@@ -2769,6 +3512,10 @@ async def main():
     await start_web_server()
     await application.initialize()
     await application.start()
+
+    # Scan automatique des canaux déjà enregistrés au démarrage
+    asyncio.create_task(startup_channel_scan(application.bot))
+
     asyncio.create_task(check_expirations_task(application))
 
     logger.info("✅ Bot multi-canal démarré avec succès!")

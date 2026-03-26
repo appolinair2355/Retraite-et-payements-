@@ -4,18 +4,17 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
+    plan: free
     envVars:
-      - key: PORT
-        value: 10000
       - key: BOT_TOKEN
         sync: false
-      - key: GEMINI_API_KEY
-        sync: false
+      - key: ADMINS
+        value: "1190237801"
+      - key: PORT
+        value: "10000"
       - key: TELETHON_API_ID
-        sync: false
+        value: "29177661"
       - key: TELETHON_API_HASH
         sync: false
       - key: TELETHON_SESSION
-        sync: false
-      - key: ADMINS
         sync: false
