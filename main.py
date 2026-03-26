@@ -361,47 +361,58 @@ def _is_invalid_key_error(error_str: str) -> bool:
     return any(x in error_str for x in ["401", "invalid api key", "api key not valid", "unauthorized", "permission_denied", "authentication"])
 
 
+AI_CALL_TIMEOUT = 25  # secondes max par appel IA
+
+
 async def _call_ai_provider(provider: str, api_key: str, history: list, user_message: str) -> str:
     """Effectue un appel IA avec une clé spécifique. Lève une exception si échec."""
-    if provider == "gemini":
-        from google import genai as google_genai
-        client = google_genai.Client(api_key=api_key)
-        contents = [{"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
-                    {"role": "model", "parts": [{"text": "Bien compris, je suis prêt à aider."}]}]
-        contents.extend(history)
-        contents.append({"role": "user", "parts": [{"text": user_message}]})
-        response = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: client.models.generate_content(
-                model=AI_PROVIDERS["gemini"]["default_model"],
-                contents=contents
+
+    async def _do_call():
+        if provider == "gemini":
+            from google import genai as google_genai
+            client = google_genai.Client(api_key=api_key)
+            contents = [{"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
+                        {"role": "model", "parts": [{"text": "Bien compris, je suis prêt à aider."}]}]
+            contents.extend(history)
+            contents.append({"role": "user", "parts": [{"text": user_message}]})
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.models.generate_content(
+                    model=AI_PROVIDERS["gemini"]["default_model"],
+                    contents=contents
+                )
             )
-        )
-        return response.text
-    else:
-        import openai as openai_lib
-        base_urls = {
-            "openai": None,
-            "groq": "https://api.groq.com/openai/v1",
-            "deepseek": "https://api.deepseek.com",
-        }
-        client_kwargs = {"api_key": api_key}
-        if base_urls.get(provider):
-            client_kwargs["base_url"] = base_urls[provider]
-        oai_client = openai_lib.AsyncOpenAI(**client_kwargs)
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for h in history:
-            role = h.get("role", "user")
-            content = h.get("parts", [{}])[0].get("text", "")
-            if role == "model":
-                role = "assistant"
-            messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": user_message})
-        response = await oai_client.chat.completions.create(
-            model=AI_PROVIDERS[provider]["default_model"],
-            messages=messages
-        )
-        return response.choices[0].message.content
+            return response.text
+        else:
+            import openai as openai_lib
+            base_urls = {
+                "openai": None,
+                "groq": "https://api.groq.com/openai/v1",
+                "deepseek": "https://api.deepseek.com",
+            }
+            client_kwargs = {"api_key": api_key, "timeout": AI_CALL_TIMEOUT, "max_retries": 0}
+            if base_urls.get(provider):
+                client_kwargs["base_url"] = base_urls[provider]
+            oai_client = openai_lib.AsyncOpenAI(**client_kwargs)
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            for h in history:
+                role = h.get("role", "user")
+                content = h.get("parts", [{}])[0].get("text", "")
+                if role == "model":
+                    role = "assistant"
+                messages.append({"role": role, "content": content})
+            messages.append({"role": "user", "content": user_message})
+            response = await oai_client.chat.completions.create(
+                model=AI_PROVIDERS[provider]["default_model"],
+                messages=messages
+            )
+            return response.choices[0].message.content
+
+    try:
+        return await asyncio.wait_for(_do_call(), timeout=AI_CALL_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise Exception(f"Timeout: {provider} n'a pas répondu en {AI_CALL_TIMEOUT}s")
 
 
 async def check_single_ai_key(provider: str, api_key: str) -> tuple:
@@ -565,6 +576,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 data["ai_config"]["keys"] = {}
             existing = get_keys_list(data["ai_config"], provider)
             if api_key in existing:
+                admin_state.pop(user.id, None)
                 await update.message.reply_text("⚠️ Cette clé est déjà configurée.", reply_markup=cancel_kb)
                 return
             existing.append(api_key)
@@ -592,6 +604,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 data["ai_config"] = {}
             existing = get_keys_list(data["ai_config"], provider)
             if new_key in existing:
+                admin_state.pop(user.id, None)
                 await update.message.reply_text("⚠️ Cette clé est déjà dans la liste.", reply_markup=cancel_kb)
                 return
             old_key = existing[idx] if 0 <= idx < len(existing) else None
@@ -695,16 +708,27 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Indiquer que le bot est en train d'écrire
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    response = await ai_reply(user.id, text, bot=context.bot)
+    try:
+        response = await ai_reply(user.id, text, bot=context.bot)
+    except Exception as e:
+        logger.error(f"Erreur inattendue ai_reply pour {user.id}: {e}", exc_info=True)
+        response = "L'assistant est temporairement indisponible. Contactez l'administrateur."
 
     # Bouton "Retourner à l'accueil" après chaque réponse
     home_keyboard = [[InlineKeyboardButton("🏠 Retourner à l'accueil", callback_data="home")]]
 
-    await update.message.reply_text(
-        response,
-        reply_markup=InlineKeyboardMarkup(home_keyboard),
-        parse_mode="Markdown"
-    )
+    try:
+        await update.message.reply_text(
+            response,
+            reply_markup=InlineKeyboardMarkup(home_keyboard),
+            parse_mode="Markdown"
+        )
+    except Exception:
+        await update.message.reply_text(
+            response,
+            reply_markup=InlineKeyboardMarkup(home_keyboard),
+            parse_mode=None
+        )
 
     logger.info(f"IA [assistance] répondu à {user.id}: {text[:50]}...")
 
@@ -1154,7 +1178,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Activer le mode assistance
         assistance_mode[user.id] = True
         # Réinitialiser l'historique pour une nouvelle session
-        conversation_history.pop(str(user.id), None)
+        conversation_history.pop(user.id, None)
 
         home_keyboard = [[InlineKeyboardButton("🏠 Retourner à l'accueil", callback_data="home")]]
         await query.edit_message_text(
@@ -1173,7 +1197,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "home":
         user = update.effective_user
         assistance_mode.pop(user.id, None)
-        conversation_history.pop(str(user.id), None)
+        conversation_history.pop(user.id, None)
         admin_state.pop(user.id, None)
         await query.edit_message_text("✅ Session terminée.")
         if is_admin(user.id):
@@ -3422,8 +3446,7 @@ async def check_expirations_task(application: Application):
                             f"⏰ **Accès expiré — {ch['name']}**\n\n"
                             f"Votre accès à ce canal a expiré et vous avez été retiré.\n\n"
                             f"🚫 Toute tentative de retour sera automatiquement bloquée.\n\n"
-                            f"💳 Pour renouveler votre abonnement, écrivez à @Kouam2025_bot\n"
-                            f"👉 Ou appuyez sur /start dans ce bot.",
+                            f"💳 Pour renouveler votre abonnement, appuyez sur /start dans ce bot.",
                             parse_mode="Markdown"
                         )
                     except Exception:
@@ -3481,10 +3504,33 @@ async def startup_channel_scan(bot):
     logger.info(f"🔍 Scan démarrage terminé: {active} canal(aux) actif(s) sur {len(channels)} enregistré(s).")
 
 
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Capture toutes les exceptions non gérées des handlers.
+    Nettoie admin_state pour éviter que l'admin reste bloqué."""
+    logger.error("Exception non gérée dans un handler:", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_user:
+        uid = update.effective_user.id
+        if uid in admin_state:
+            admin_state.pop(uid, None)
+            logger.warning(f"admin_state nettoyé pour {uid} suite à une erreur")
+        try:
+            msg = update.message or (update.callback_query and update.callback_query.message)
+            if msg:
+                await msg.reply_text(
+                    "❌ Une erreur est survenue. L'état a été réinitialisé. Tapez /start pour recommencer.",
+                    parse_mode=None
+                )
+        except Exception:
+            pass
+
+
 async def main():
     logger.info("🤖 Démarrage du bot multi-canal...")
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
+
+    application.add_error_handler(global_error_handler)
 
     # Seule commande disponible: /start (ouvre le menu principal pour tout le monde)
     # Toutes les actions admin passent par les boutons inline
