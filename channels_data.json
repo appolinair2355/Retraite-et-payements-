@@ -1,46 +1,5 @@
 {
-    "channels": {
-        "-1003329818758": {
-            "name": "KOUAMÉ & JOKER PRÉDICTION",
-            "default_duration_seconds": 86400,
-            "members": {
-                "1190237801": {
-                    "expires_at": 1775780180,
-                    "granted_at": 1773188180,
-                    "duration_seconds": 2592000
-                }
-            },
-            "blocked": {
-                "5622847726": {
-                    "blocked_at": 1774385455
-                }
-            }
-        },
-        "-1003501017916": {
-            "name": "VIP 2",
-            "default_duration_seconds": 86400,
-            "members": {},
-            "blocked": {}
-        }
-    },
-    "global_admins": [
-        8649780855
-    ],
-    "ai_enabled": true,
-    "used_payments": {
-        "6e539a1f3a7778fda2ec38e2": {
-            "user_id": 5622847726,
-            "date": "11/03/2026 00:52",
-            "channel": "VIP 2",
-            "amount_str": "0.03999 BNB → 9,117 FCFA\n💱 _1 BNB ≈ 228,000 FCFA_",
-            "reference": "0X13108641DCFABEA3B2E8DED"
-        }
-    },
-    "ai_config": {
-        "keys": {
-            "gemini": "AIzaSyCQl68Rvpl7nen0OPRN3xcs02hJDnZLHds",
-            "groq": ["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"]
-        },
-        "provider": "gemini"
-    }
+    "channels": {},
+    "global_admins": [],
+    "ai_enabled": true
 }
