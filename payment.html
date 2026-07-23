@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paiement — Sossou Kouamé Shopping Boutique</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* ── CATÉGORIES ── */
+    .cat-grid { display:flex; flex-direction:column; gap:14px; width:100%; max-width:500px; }
+    .cat-card { background:rgba(255,255,255,.04); border:1.5px solid rgba(255,255,255,.1); border-radius:18px; padding:22px 20px; cursor:pointer; transition:all .2s; display:flex; align-items:center; gap:16px; }
+    .cat-card:hover { transform:translateY(-3px); }
+    .cat-card.cat-abo  { border-color:rgba(240,192,64,.35); }
+    .cat-card.cat-tg   { border-color:rgba(99,102,241,.35); }
+    .cat-card.cat-maint{ border-color:rgba(16,185,129,.35); }
+    .cat-card:hover.cat-abo  { background:rgba(240,192,64,.07); }
+    .cat-card:hover.cat-tg   { background:rgba(99,102,241,.07); }
+    .cat-card:hover.cat-maint{ background:rgba(16,185,129,.07); }
+    .cat-icon { font-size:2rem; flex-shrink:0; }
+    .cat-body h3 { margin:0 0 4px; font-size:.98rem; font-weight:700; }
+    .cat-card.cat-abo  .cat-body h3 { color:#F0C040; }
+    .cat-card.cat-tg   .cat-body h3 { color:#a5b4fc; }
+    .cat-card.cat-maint .cat-body h3 { color:#6EE7B7; }
+    .cat-body p { margin:0; font-size:.78rem; color:rgba(255,255,255,.45); line-height:1.4; }
+    .cat-arrow { margin-left:auto; font-size:1.4rem; color:rgba(255,255,255,.25); flex-shrink:0; }
+    .cat-card:hover .cat-arrow { color:rgba(255,255,255,.7); }
+
+    /* ── PLANS EUR ── */
+    .plans-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; width:100%; margin-bottom:20px; }
+    @media(max-width:500px){ .plans-grid{ grid-template-columns:1fr; } }
+    .plan-card { position:relative; background:rgba(255,255,255,.04); border:1.5px solid rgba(255,255,255,.09); border-radius:16px; padding:20px 14px; cursor:pointer; transition:all .2s; text-align:center; }
+    .plan-card:hover { border-color:rgba(240,192,64,.4); transform:translateY(-2px); }
+    .plan-card.selected { border-color:#F0C040; background:rgba(240,192,64,.09); }
+    .plan-popular { position:absolute; top:-10px; left:50%; transform:translateX(-50%); background:#F0C040; color:#000; font-size:.62rem; font-weight:800; padding:3px 10px; border-radius:100px; white-space:nowrap; letter-spacing:.04em; }
+    .plan-emoji  { font-size:1.8rem; margin-bottom:6px; }
+    .plan-dur    { font-size:.8rem; color:rgba(255,255,255,.5); margin-bottom:8px; }
+    .plan-eur    { font-size:1.6rem; font-weight:800; color:#F0C040; line-height:1; }
+    .plan-eur sup{ font-size:.75rem; vertical-align:super; font-weight:700; }
+    .plan-sub    { font-size:.7rem; color:rgba(255,255,255,.35); margin-top:4px; }
+
+    /* ── SERVICE FORM ── */
+    .svc-form { background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.09); border-radius:18px; padding:24px; width:100%; max-width:500px; }
+    .svc-form label { display:block; font-size:.75rem; font-weight:700; color:rgba(255,255,255,.5); letter-spacing:.07em; text-transform:uppercase; margin-bottom:6px; }
+    .svc-form input, .svc-form textarea { width:100%; box-sizing:border-box; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:10px; color:#fff; padding:12px 14px; font-size:.9rem; font-family:'Poppins',sans-serif; outline:none; resize:vertical; }
+    .svc-form input:focus, .svc-form textarea:focus { border-color:rgba(240,192,64,.5); }
+    .eur-row { display:flex; align-items:center; gap:10px; }
+    .eur-prefix { background:rgba(240,192,64,.12); border:1px solid rgba(240,192,64,.3); border-radius:10px; padding:11px 14px; color:#F0C040; font-weight:800; font-size:1rem; flex-shrink:0; }
+    .xof-hint  { font-size:.75rem; color:rgba(255,255,255,.3); margin-top:6px; }
+
+    /* ── MÉTHODES ── */
+    .method-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; width:100%; margin-bottom:20px; }
+    .method-card { background:rgba(255,255,255,.04); border:1.5px solid rgba(255,255,255,.09); border-radius:14px; padding:20px 14px; cursor:pointer; transition:all .2s; text-align:center; }
+    .method-card:hover { border-color:rgba(240,192,64,.4); transform:translateY(-2px); }
+    .method-card.selected { border-color:#F0C040; background:rgba(240,192,64,.09); }
+    .method-emoji { font-size:1.8rem; margin-bottom:8px; }
+    .method-name  { font-size:.88rem; font-weight:700; color:#fff; }
+    .method-desc  { font-size:.72rem; color:rgba(255,255,255,.4); margin-top:3px; }
+
+    /* ── MOBILE MONEY ── */
+    .glass-gold { background:rgba(240,192,64,.04); border:1px solid rgba(240,192,64,.15); border-radius:16px; }
+    .form-section { margin-bottom:16px; }
+    .form-label { display:block; font-size:.78rem; font-weight:700; color:rgba(255,255,255,.5); letter-spacing:.07em; text-transform:uppercase; margin-bottom:8px; }
+    .network-chips { display:flex; flex-wrap:wrap; gap:8px; }
+    .network-chip { display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:100px; border:1.5px solid rgba(255,255,255,.15); background:rgba(255,255,255,.05); color:rgba(255,255,255,.8); font-size:.82rem; font-weight:600; cursor:pointer; transition:all .15s; }
+    .network-chip.selected { border-color:#F0C040; background:rgba(240,192,64,.12); color:#F0C040; }
+    .net-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+    .phone-row { display:flex; gap:10px; align-items:center; }
+    .phone-prefix { display:flex; align-items:center; gap:5px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:11px 12px; font-size:.88rem; font-weight:600; color:#fff; white-space:nowrap; flex-shrink:0; }
+    .btn-pay-error { background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.3); border-radius:10px; padding:10px 14px; color:#FCA5A5; font-size:.82rem; display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+
+    /* ── CRYPTO ── */
+    .crypto-note { background:rgba(99,102,241,.08); border:1px solid rgba(99,102,241,.2); border-radius:10px; padding:12px 14px; font-size:.8rem; color:rgba(255,255,255,.65); display:flex; gap:8px; align-items:flex-start; margin-bottom:18px; }
+    .crypto-chips { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .crypto-chip { background:rgba(255,255,255,.04); border:1.5px solid rgba(255,255,255,.1); border-radius:12px; padding:12px; cursor:pointer; display:flex; align-items:center; gap:10px; transition:all .18s; }
+    .crypto-chip:hover { border-color:rgba(240,192,64,.35); }
+    .crypto-chip.selected { border-color:#F0C040; background:rgba(240,192,64,.08); }
+    .crypto-sym-badge { font-size:1.4rem; flex-shrink:0; }
+    .crypto-chip-name { font-size:.8rem; font-weight:700; color:#fff; }
+    .crypto-chip-sym  { font-size:.68rem; color:rgba(255,255,255,.4); }
+    .address-reveal { background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:14px; }
+    .addr-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+    .addr-title { font-size:.82rem; font-weight:700; color:#fff; }
+    .addr-net-tag { background:rgba(99,102,241,.2); color:#a5b4fc; font-size:.65rem; font-weight:700; padding:2px 8px; border-radius:100px; }
+    .addr-value { font-size:.72rem; color:rgba(255,255,255,.6); word-break:break-all; margin-bottom:10px; font-family:monospace; }
+    .addr-actions { display:flex; align-items:center; justify-content:space-between; }
+    .btn-copy { display:flex; align-items:center; gap:5px; background:rgba(240,192,64,.12); border:1px solid rgba(240,192,64,.3); color:#F0C040; border-radius:7px; padding:6px 12px; font-size:.75rem; font-weight:600; cursor:pointer; transition:.15s; }
+    .btn-copy:hover { background:rgba(240,192,64,.22); }
+    .btn-copy.copied { background:rgba(16,185,129,.12); border-color:#10B981; color:#10B981; }
+    .addr-min { font-size:.7rem; color:rgba(255,255,255,.35); }
+    .field-hint { font-size:.72rem; color:rgba(255,255,255,.35); margin-top:4px; }
+
+    /* ── ATTENTE ── */
+    .wait-screen { text-align:center; padding:14px 0; }
+
+    /* ── STEPS ── */
+    .pay-step.hidden { display:none !important; }
+    .pay-step > h2 { color:#F0C040; font-size:1.05rem; font-weight:800; margin:0 0 4px; }
+    .pay-step > p  { color:rgba(255,255,255,.45); font-size:.8rem; margin:0 0 20px; }
+
+    /* ── PROGRESS ── */
+    .pay-progress { display:flex; align-items:center; margin-bottom:28px; width:100%; max-width:500px; }
+    .prog-step { display:flex; flex-direction:column; align-items:center; gap:5px; }
+    .prog-num { width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:.75rem; font-weight:800; border:2px solid rgba(255,255,255,.15); color:rgba(255,255,255,.35); transition:.3s; }
+    .prog-step.active .prog-num { border-color:#F0C040; color:#F0C040; background:rgba(240,192,64,.12); }
+    .prog-step.done   .prog-num { border-color:#10B981; color:#10B981; background:rgba(16,185,129,.12); }
+    .prog-label { font-size:.62rem; color:rgba(255,255,255,.35); font-weight:600; white-space:nowrap; }
+    .prog-step.active .prog-label, .prog-step.done .prog-label { color:rgba(255,255,255,.6); }
+    .prog-line { flex:1; height:2px; background:rgba(255,255,255,.08); margin:0 6px; margin-bottom:16px; border-radius:2px; transition:.3s; }
+    .prog-line.done { background:#10B981; }
+
+    /* ── CURRENCY BTNS ── */
+    .curr-btn { background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); color:rgba(255,255,255,.55); border-radius:8px; padding:5px 13px; cursor:pointer; font-size:.78rem; font-weight:600; transition:.2s; font-family:inherit; }
+    .curr-btn.active { background:rgba(240,192,64,.15); border-color:#F0C040; color:#F0C040; }
+
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+  <div class="bg-canvas"></div>
+  <div class="grid-overlay"></div>
+  <div class="stars" id="stars"></div>
+
+  <nav class="navbar">
+    <div class="nav-container">
+      <a href="/dashboard.html" class="logo-link">
+        <img src="logo-sk.png" alt="" class="logo-img" onerror="this.style.display='none'">
+        <span class="logo-text">SOSSOU KOUAMÉ SHOPPING BOUTIQUE</span>
+      </a>
+      <div class="nav-right">
+        <a href="/dashboard.html" class="nav-back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+          Retour
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="page-main" style="position:relative;z-index:1;">
+    <div class="pay-container">
+
+      <!-- Progress -->
+      <div class="pay-progress" id="progress">
+        <div class="prog-step active" id="ps1"><div class="prog-num">1</div><span class="prog-label">Catégorie</span></div>
+        <div class="prog-line" id="pl1"></div>
+        <div class="prog-step" id="ps2"><div class="prog-num">2</div><span class="prog-label">Détails</span></div>
+        <div class="prog-line" id="pl2"></div>
+        <div class="prog-step" id="ps3"><div class="prog-num">3</div><span class="prog-label">Mode</span></div>
+        <div class="prog-line" id="pl3"></div>
+        <div class="prog-step" id="ps4"><div class="prog-num">4</div><span class="prog-label">Paiement</span></div>
+      </div>
+
+      <!-- ───── ÉTAPE 1 : Catégorie ───── -->
+      <div id="s1" class="pay-step">
+        <h2>Choisissez une catégorie</h2>
+        <p>Sélectionnez le type de service que vous souhaitez payer</p>
+
+        <div class="cat-grid">
+          <div class="cat-card cat-abo" onclick="selCat('abonnement')">
+            <div class="cat-icon">📅</div>
+            <div class="cat-body">
+              <h3>Abonnement</h3>
+              <p>Accès au compte — 1€/J · 12€/15J · 30€/Mois</p>
+            </div>
+            <div class="cat-arrow">›</div>
+          </div>
+          <div class="cat-card cat-tg" onclick="selCat('telegram')">
+            <div class="cat-icon">✈️</div>
+            <div class="cat-body">
+              <h3>Service Telegram</h3>
+              <p>Montant libre — Mobile Money ou Crypto</p>
+            </div>
+            <div class="cat-arrow">›</div>
+          </div>
+          <div class="cat-card cat-maint" onclick="selCat('maintenance')">
+            <div class="cat-icon">🔧</div>
+            <div class="cat-body">
+              <h3>Service de Maintenance</h3>
+              <p>Montant libre — Mobile Money ou Crypto</p>
+            </div>
+            <div class="cat-arrow">›</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ───── ÉTAPE 2A : Plans abonnement ───── -->
+      <div id="s2a" class="pay-step hidden">
+        <h2>Choisissez votre abonnement</h2>
+        <p>Sélectionnez la durée qui vous convient</p>
+
+        <div style="display:flex;gap:8px;justify-content:center;margin-bottom:20px">
+          <button class="curr-btn active" id="cbtn_eur" onclick="setCurr('eur')">€ EUR</button>
+          <button class="curr-btn" id="cbtn_xof" onclick="setCurr('xof')">🪙 XOF</button>
+          <button class="curr-btn" id="cbtn_usd" onclick="setCurr('usd')">$ USD</button>
+        </div>
+
+        <div class="plans-grid" style="max-width:500px;width:100%">
+          <div class="plan-card" onclick="selPlan('1j',this)">
+            <div class="plan-emoji">⚡</div>
+            <div class="plan-dur">1 Jour</div>
+            <div class="plan-eur" id="price_1j"><sup>€</sup>1</div>
+            <div class="plan-sub" id="sub_1j">≈ 656 XOF</div>
+          </div>
+          <div class="plan-card" onclick="selPlan('15j',this)" style="position:relative">
+            <div class="plan-popular">⭐ Populaire</div>
+            <div class="plan-emoji">🚀</div>
+            <div class="plan-dur">15 Jours</div>
+            <div class="plan-eur" id="price_15j"><sup>€</sup>12</div>
+            <div class="plan-sub" id="sub_15j">≈ 7 872 XOF</div>
+          </div>
+          <div class="plan-card" onclick="selPlan('30j',this)">
+            <div class="plan-emoji">👑</div>
+            <div class="plan-dur">30 Jours</div>
+            <div class="plan-eur" id="price_30j"><sup>€</sup>30</div>
+            <div class="plan-sub" id="sub_30j">≈ 19 680 XOF</div>
+          </div>
+        </div>
+
+        <button class="btn-primary" id="btnS2a" onclick="goStep(3)" disabled style="max-width:500px;width:100%">
+          Continuer
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button class="btn-ghost" onclick="goStep(1)">← Retour</button>
+      </div>
+
+      <!-- ───── ÉTAPE 2B : Service personnalisé ───── -->
+      <div id="s2b" class="pay-step hidden">
+        <h2 id="s2bTitle">Service</h2>
+        <p>Renseignez les détails du service</p>
+
+        <div class="svc-form" style="max-width:500px;width:100%">
+          <div style="margin-bottom:16px">
+            <label>Description du service <span style="color:rgba(255,255,255,.3)">(facultatif)</span></label>
+            <input type="text" id="svcDesc" placeholder="Ex : Abonnement canal Telegram VIP, réparation…">
+          </div>
+          <div>
+            <label>Montant</label>
+            <div class="eur-row">
+              <div class="eur-prefix">€</div>
+              <input type="number" id="svcAmount" placeholder="Ex : 25" min="1" step="1" oninput="updateXofHint()">
+            </div>
+            <div class="xof-hint" id="xofHint">≈ 0 XOF</div>
+          </div>
+          <div id="s2bErr" class="btn-pay-error hidden" style="margin-top:14px"><span>⚠</span><span id="s2bErrTxt"></span></div>
+        </div>
+
+        <button class="btn-primary" id="btnS2b" onclick="validateService()" style="max-width:500px;width:100%;margin-top:16px">
+          Continuer
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button class="btn-ghost" onclick="goStep(1)">← Retour</button>
+      </div>
+
+      <!-- ───── ÉTAPE 3 : Méthode de paiement ───── -->
+      <div id="s3" class="pay-step hidden">
+        <h2>Mode de paiement</h2>
+        <p id="s3sub">—</p>
+
+        <div class="method-grid" style="max-width:500px;width:100%">
+          <div class="method-card" id="mMobile" onclick="selMethod('mobile')">
+            <div class="method-emoji">📱</div>
+            <div class="method-name">Mobile Money</div>
+            <div class="method-desc">MTN · Orange · Wave · Moov</div>
+          </div>
+          <div class="method-card" id="mCrypto" onclick="selMethod('crypto')">
+            <div class="method-emoji">₿</div>
+            <div class="method-name">Cryptomonnaie</div>
+            <div class="method-desc">USDT · BTC · ETH…</div>
+          </div>
+        </div>
+
+        <button class="btn-primary" id="btnS3" onclick="goStep(4)" disabled style="max-width:500px;width:100%">
+          Continuer
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button class="btn-ghost" onclick="backToDetails()">← Retour</button>
+      </div>
+
+      <!-- ───── ÉTAPE 4A : Mobile Money ───── -->
+      <div id="s4m" class="pay-step hidden">
+        <h2>Paiement Mobile Money</h2>
+        <p id="s4msub">—</p>
+
+        <div class="glass-gold" style="padding:24px;max-width:500px;width:100%;margin-bottom:8px">
+          <div class="form-section">
+            <label class="form-label">Pays</label>
+            <div class="input-wrapper">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+              <select id="countrySelect" onchange="onCountry()">
+                <option value="" disabled selected>Sélectionner un pays</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-section" id="netGrp" style="display:none">
+            <label class="form-label">Réseau</label>
+            <div class="network-chips" id="netChips"></div>
+          </div>
+          <div class="form-section" id="phoneGrp" style="display:none">
+            <label class="form-label">Numéro à débiter</label>
+            <div class="phone-row">
+              <div class="phone-prefix" id="phonePrefix"><span id="pFlag">🌍</span><span id="pCode">+</span></div>
+              <div class="input-wrapper" style="flex:1;margin:0">
+                <input type="tel" id="phoneInput" placeholder="Ex: 20 21 12 34" maxlength="15" oninput="chkMobile()" style="padding-left:14px">
+              </div>
+            </div>
+          </div>
+          <div id="mErr" class="btn-pay-error hidden"><span>⚠</span><span id="mErrTxt"></span></div>
+          <button class="btn-primary" id="btnPayM" onclick="payMobile()" style="display:none;margin-top:4px">
+            <span id="btnMTxt">💳 Payer maintenant</span>
+            <span class="btn-loader hidden" id="mLoad"></span>
+          </button>
+          <!-- Écran attente USSD -->
+          <div id="mWaitScreen" class="wait-screen hidden">
+            <div style="font-size:3rem;margin-bottom:12px">📱</div>
+            <p style="color:#10B981;font-weight:700;font-size:1rem;margin:0 0 6px">Demande envoyée !</p>
+            <p style="color:rgba(255,255,255,.65);font-size:.85rem;margin:0 0 16px;line-height:1.5">
+              Un message va apparaître sur votre téléphone.<br>
+              <strong style="color:#F0C040">Confirmez le paiement sur votre téléphone.</strong>
+            </p>
+            <div class="btn-loader" style="display:inline-block;margin-bottom:14px"></div>
+            <p id="mWaitStatus" style="color:rgba(255,255,255,.4);font-size:.78rem;margin:0">Vérification en cours…</p>
+          </div>
+        </div>
+
+        <button class="btn-ghost" onclick="goStep(3)">← Retour</button>
+      </div>
+
+      <!-- ───── ÉTAPE 4B : Crypto ───── -->
+      <div id="s4c" class="pay-step hidden">
+        <h2>Paiement Cryptomonnaie</h2>
+        <p id="s4csub">—</p>
+
+        <div class="glass-gold" style="padding:24px;max-width:500px;width:100%;margin-bottom:8px">
+          <div class="crypto-note">
+            <span>💡</span>
+            Choisissez une crypto, envoyez le montant exact à l'adresse indiquée, puis confirmez avec votre hash.
+          </div>
+          <div class="form-section">
+            <label class="form-label">Cryptomonnaie</label>
+            <div class="crypto-chips" id="cryptoChips"></div>
+          </div>
+          <div id="addrBlock" style="display:none">
+            <div style="background:rgba(240,192,64,.1);border:1px solid rgba(240,192,64,.3);border-radius:12px;padding:14px 16px;margin-bottom:16px;text-align:center">
+              <div style="font-size:.75rem;color:rgba(255,255,255,.5);margin-bottom:4px">Montant exact à envoyer</div>
+              <div style="font-size:1.4rem;font-weight:800;color:#F0C040" id="addrAmount">—</div>
+              <button onclick="copyAmount()" style="margin-top:6px;background:none;border:1px solid rgba(240,192,64,.4);color:#F0C040;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:.75rem">Copier le montant</button>
+            </div>
+            <div class="address-reveal">
+              <div class="addr-top">
+                <span class="addr-title" id="addrTitle"></span>
+                <span class="addr-net-tag" id="addrNet"></span>
+              </div>
+              <div class="addr-value" id="addrVal"></div>
+              <div class="addr-actions">
+                <button class="btn-copy" id="btnCopy" onclick="copyAddr()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  Copier l'adresse
+                </button>
+                <span class="addr-min">Min : <strong id="addrMin"></strong></span>
+              </div>
+            </div>
+            <div class="form-section" style="margin-top:18px">
+              <label class="form-label">Hash de transaction <span style="text-transform:none;color:rgba(255,255,255,.3)">(facultatif)</span></label>
+              <div class="input-wrapper">
+                <input type="text" id="txHash" placeholder="Ex: 0xabc123…" style="padding-left:14px">
+              </div>
+              <p class="field-hint">Renseignez votre hash pour accélérer la validation.</p>
+            </div>
+            <div id="cErr" class="btn-pay-error hidden"><span>⚠</span><span id="cErrTxt"></span></div>
+            <button class="btn-primary" onclick="payCrypto()" style="margin-top:4px">✓ Confirmer l'envoi</button>
+          </div>
+        </div>
+
+        <button class="btn-ghost" onclick="goStep(3)">← Retour</button>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Overlay Money Fusion -->
+  <div id="mfOverlay" style="display:none;position:fixed;inset:0;z-index:400;flex-direction:column;background:#0a0f1e">
+    <div style="background:#0e1628;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(240,192,64,0.2);flex-shrink:0">
+      <span style="color:#F0C040;font-weight:700;font-size:.9rem">🔒 Paiement sécurisé</span>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="mfStatus" style="color:rgba(255,255,255,0.45);font-size:.8rem">En attente…</span>
+        <button onclick="closeMfFrame()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:.8rem">✕ Annuler</button>
+      </div>
+    </div>
+    <iframe id="mfFrame" src="about:blank" style="flex:1;border:none;width:100%" allow="payment *; camera; microphone"></iframe>
+  </div>
+
+  <script>
+    // Étoiles
+    (function(){
+      const c=document.getElementById('stars');
+      for(let i=0;i<50;i++){
+        const s=document.createElement('div');s.className='star';
+        const sz=Math.random()*1.5+.5;
+        s.style.cssText=`width:${sz}px;height:${sz}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--dur:${2+Math.random()*4}s;--delay:${Math.random()*5}s`;
+        c.appendChild(s);
+      }
+    })();
+
+    // Auth check
+    fetch('/api/me').then(r=>{ if(r.status===401) window.location.href='/'; }).catch(()=>{});
+
+    // ─── DONNÉES ────────────────────────────────────────────────────────
+    const PLANS = {
+      '1j':  { label:'1 Jour',   eur:1,  xof:656,   usd:1.08,  minutes:1440 },
+      '15j': { label:'15 Jours', eur:12, xof:7872,  usd:12.96, minutes:21600 },
+      '30j': { label:'30 Jours', eur:30, xof:19680, usd:32.40, minutes:43200 },
+    };
+    const COUNTRIES = {
+      bj:{name:'Bénin',         flag:'🇧🇯',code:'+229',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'moov',n:'Moov',c:'#FF6600'},{k:'celtiis',n:'Celtiis',c:'#00A859'}]},
+      ci:{name:"Côte d'Ivoire", flag:'🇨🇮',code:'+225',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'},{k:'wave',n:'Wave',c:'#1CE5BD'}]},
+      bf:{name:'Burkina Faso',  flag:'🇧🇫',code:'+226',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      tg:{name:'Togo',          flag:'🇹🇬',code:'+228',nets:[{k:'tmoney',n:'T-Money',c:'#0066CC'},{k:'moov',n:'Moov',c:'#FF6600'}]},
+      sn:{name:'Sénégal',       flag:'🇸🇳',code:'+221',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'wave',n:'Wave',c:'#1CE5BD'},{k:'free',n:'Free',c:'#DA291C'}]},
+      ml:{name:'Mali',          flag:'🇲🇱',code:'+223',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      gh:{name:'Ghana',         flag:'🇬🇭',code:'+233',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'vodafone',n:'Vodafone',c:'#E60000'}]},
+      ng:{name:'Nigeria',       flag:'🇳🇬',code:'+234',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'airtel',n:'Airtel',c:'#E60000'}]},
+      cm:{name:'Cameroun',      flag:'🇨🇲',code:'+237',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'}]},
+      fr:{name:'France',        flag:'🇫🇷',code:'+33', nets:[{k:'orange',n:'Orange',c:'#FF6600'}]},
+    };
+    const CRYPTOS = [
+      {id:'USDT_TRC20',name:'Tether TRC20',sym:'USDT',icon:'₮',net:'TRON',    addr:'T9zZ123xABCdef456GHIjkl789mnoPQRst',min:'10 USDT'},
+      {id:'USDT_ERC20',name:'Tether ERC20',sym:'USDT',icon:'₮',net:'ETH',     addr:'0x71C7656EC7ab88b098defB751B7401B5f6d8976F',min:'10 USDT'},
+      {id:'BTC',       name:'Bitcoin',     sym:'BTC', icon:'₿',net:'Bitcoin', addr:'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',min:'0.001 BTC'},
+      {id:'ETH',       name:'Ethereum',    sym:'ETH', icon:'Ξ',net:'ETH',     addr:'0x71C7656EC7ab88b098defB751B7401B5f6d8976F',min:'0.01 ETH'},
+    ];
+
+    let selCat_    = null; // 'abonnement' | 'telegram' | 'maintenance'
+    let selPlanId  = null;
+    let selMethod_ = null;
+    let selCountry = null, selNet = null, selCrypto = null;
+    let selCurr    = 'eur';
+    let svcAmtXof  = 0;
+    let liveRates  = { usd_to_xof:656, usd_to_eur:0.93, btc_usd:60000, eth_usd:3000 };
+    let mPollInterval = null;
+
+    // Fetch rates
+    fetch('/api/rates').then(r=>r.json()).then(d=>{ liveRates=d; updatePlanPrices(); }).catch(()=>{});
+
+    // Pre-select category from URL param
+    const _cat = new URLSearchParams(location.search).get('cat');
+    if (_cat) { window.addEventListener('DOMContentLoaded', ()=> selCat(_cat)); }
+
+    // ─── NAVIGATION ─────────────────────────────────────────────────────
+    function allSteps(){ return ['s1','s2a','s2b','s3','s4m','s4c']; }
+
+    function showStep(id){
+      allSteps().forEach(s=>{ const el=document.getElementById(s); if(el) el.classList.add('hidden'); });
+      document.getElementById(id).classList.remove('hidden');
+      window.scrollTo(0,0);
+    }
+
+    function setProgress(n){
+      [1,2,3,4].forEach(i=>{
+        const el=document.getElementById('ps'+i);
+        el.className='prog-step'+(n>i?' done':n===i?' active':'');
+        if(i<4) document.getElementById('pl'+i).className='prog-line'+(n>i?' done':'');
+      });
+    }
+
+    function goStep(n){
+      setProgress(n);
+      if(n===1){ showStep('s1'); }
+      else if(n===2){
+        if(selCat_==='abonnement') { showStep('s2a'); }
+        else showStep('s2b');
+      }
+      else if(n===3){ showStep('s3'); initS3(); }
+      else if(n===4){
+        if(selMethod_==='mobile'){ showStep('s4m'); initS4m(); }
+        else { showStep('s4c'); initS4c(); }
+      }
+    }
+
+    function backToDetails(){ goStep(2); }
+
+    // ─── ÉTAPE 1 : Catégorie ────────────────────────────────────────────
+    function selCat(cat){
+      selCat_ = cat;
+      selPlanId = null; selMethod_ = null; selCountry = null; selNet = null; selCrypto = null;
+      document.getElementById('btnS2a') && (document.getElementById('btnS2a').disabled = true);
+      document.querySelectorAll('.plan-card').forEach(c=>c.classList.remove('selected'));
+      document.querySelectorAll('.method-card').forEach(c=>c.classList.remove('selected'));
+      document.getElementById('btnS3') && (document.getElementById('btnS3').disabled = true);
+      goStep(2);
+    }
+
+    // ─── ÉTAPE 2A : Plans ───────────────────────────────────────────────
+    const EUR_TO_XOF = 656;
+
+    function setCurr(c){
+      selCurr=c;
+      ['eur','xof','usd'].forEach(k=>{
+        const b=document.getElementById('cbtn_'+k);
+        if(b) b.classList.toggle('active', k===c);
+      });
+      updatePlanPrices();
+    }
+
+    function updatePlanPrices(){
+      Object.entries(PLANS).forEach(([id,p])=>{
+        const prEl=document.getElementById('price_'+id);
+        const sbEl=document.getElementById('sub_'+id);
+        if(!prEl||!sbEl) return;
+        const usdRate = liveRates.usd_to_xof || 656;
+        const eurRate = liveRates.usd_to_eur || 0.93;
+        if(selCurr==='eur'){
+          prEl.innerHTML=`<sup>€</sup>${p.eur}`;
+          sbEl.textContent=`≈ ${p.xof.toLocaleString('fr-FR')} XOF · $${p.usd.toFixed(2)}`;
+        } else if(selCurr==='xof'){
+          prEl.innerHTML=`<sup style="font-size:.6rem">XOF</sup>&nbsp;${p.xof.toLocaleString('fr-FR')}`;
+          sbEl.textContent=`≈ €${p.eur} · $${p.usd.toFixed(2)}`;
+        } else {
+          prEl.innerHTML=`<sup>$</sup>${p.usd.toFixed(2)}`;
+          sbEl.textContent=`≈ €${p.eur} · ${p.xof.toLocaleString('fr-FR')} XOF`;
+        }
+      });
+    }
+
+    function selPlan(id, el){
+      selPlanId = id;
+      document.querySelectorAll('.plan-card').forEach(c=>c.classList.remove('selected'));
+      el.classList.add('selected');
+      document.getElementById('btnS2a').disabled = false;
+    }
+
+    // ─── ÉTAPE 2B : Service ──────────────────────────────────────────────
+    function updateXofHint(){
+      const eur = parseFloat(document.getElementById('svcAmount').value) || 0;
+      svcAmtXof = Math.round(eur * EUR_TO_XOF);
+      document.getElementById('xofHint').textContent = `≈ ${svcAmtXof.toLocaleString('fr-FR')} XOF`;
+    }
+
+    function validateService(){
+      const eur = parseFloat(document.getElementById('svcAmount').value) || 0;
+      const err = document.getElementById('s2bErr');
+      const etx = document.getElementById('s2bErrTxt');
+      err.classList.add('hidden');
+      if(eur <= 0){ etx.textContent='Veuillez saisir un montant valide (en €)'; err.classList.remove('hidden'); return; }
+      svcAmtXof = Math.round(eur * EUR_TO_XOF);
+      goStep(3);
+    }
+
+    // ─── ÉTAPE 3 : Méthode ──────────────────────────────────────────────
+    function initS3(){
+      let sub = '';
+      if(selCat_==='abonnement' && selPlanId){
+        const p = PLANS[selPlanId];
+        sub = `${p.label} — €${p.eur} · ${p.xof.toLocaleString('fr-FR')} XOF`;
+      } else {
+        const label = selCat_==='telegram' ? 'Service Telegram' : 'Service de Maintenance';
+        const desc  = (document.getElementById('svcDesc').value||'').trim();
+        sub = `${label}${desc?' — '+desc:''} · €${Math.round(svcAmtXof/EUR_TO_XOF)} · ${svcAmtXof.toLocaleString('fr-FR')} XOF`;
+      }
+      document.getElementById('s3sub').textContent = sub;
+    }
+
+    function selMethod(m){
+      selMethod_ = m;
+      document.getElementById('mMobile').classList.toggle('selected', m==='mobile');
+      document.getElementById('mCrypto').classList.toggle('selected', m==='crypto');
+      document.getElementById('btnS3').disabled = false;
+    }
+
+    // ─── ÉTAPE 4A : Mobile Money ────────────────────────────────────────
+    function initS4m(){
+      let sub = '';
+      if(selCat_==='abonnement' && selPlanId){
+        const p = PLANS[selPlanId]; sub = `${p.label} — ${p.xof.toLocaleString('fr-FR')} XOF`;
+      } else {
+        const label = selCat_==='telegram' ? 'Service Telegram' : 'Service de Maintenance';
+        sub = `${label} — ${svcAmtXof.toLocaleString('fr-FR')} XOF`;
+      }
+      document.getElementById('s4msub').textContent = sub;
+
+      selCountry=null; selNet=null;
+      const sel=document.getElementById('countrySelect');
+      sel.innerHTML='<option value="" disabled selected>Sélectionner un pays</option>';
+      Object.entries(COUNTRIES).forEach(([k,v])=>{
+        const o=document.createElement('option'); o.value=k; o.textContent=`${v.flag} ${v.name}`; sel.appendChild(o);
+      });
+      ['netGrp','phoneGrp'].forEach(id=>document.getElementById(id).style.display='none');
+      if(document.getElementById('phoneInput')) document.getElementById('phoneInput').value='';
+      document.getElementById('btnPayM').style.display='none';
+      document.getElementById('mErr').classList.add('hidden');
+      document.getElementById('mWaitScreen').classList.add('hidden');
+    }
+
+    function onCountry(){
+      const k=document.getElementById('countrySelect').value;
+      selCountry=COUNTRIES[k]; selNet=null;
+      if(!selCountry) return;
+      document.getElementById('pFlag').textContent=selCountry.flag;
+      document.getElementById('pCode').textContent=selCountry.code;
+      const box=document.getElementById('netChips'); box.innerHTML='';
+      selCountry.nets.forEach(net=>{
+        const d=document.createElement('div'); d.className='network-chip';
+        d.innerHTML=`<span class="net-dot" style="background:${net.c}"></span>${net.n}`;
+        d.onclick=()=>{ selNet=net; document.querySelectorAll('#netChips .network-chip').forEach(c=>c.classList.remove('selected')); d.classList.add('selected'); chkMobile(); };
+        box.appendChild(d);
+      });
+      document.getElementById('netGrp').style.display='block';
+      document.getElementById('phoneGrp').style.display='block';
+      chkMobile();
+    }
+
+    function chkMobile(){
+      const phone=(document.getElementById('phoneInput').value||'').trim();
+      document.getElementById('btnPayM').style.display=(selNet&&selCountry&&phone.length>=8)?'flex':'none';
+    }
+
+    async function notifyTimeout(payReqId){
+      try {
+        await fetch('/api/notify-timeout', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            payment_req_id: payReqId,
+            country: selCountry ? selCountry.name : '',
+            network: selNet    ? selNet.n        : ''
+          })
+        });
+      } catch(e){}
+    }
+
+    function showMWaitScreen(payReqId){
+      document.getElementById('btnPayM').style.display='none';
+      document.getElementById('mErr').classList.add('hidden');
+      document.getElementById('netGrp').style.display='none';
+      document.getElementById('phoneGrp').style.display='none';
+      document.getElementById('mWaitScreen').classList.remove('hidden');
+      let attempts=0;
+      const TIMEOUT_AT=12; // 12×5s = 60s
+      mPollInterval=setInterval(async()=>{
+        attempts++;
+        const st=document.getElementById('mWaitStatus');
+        const remaining=Math.max(0,(TIMEOUT_AT-attempts)*5);
+        if(st) st.textContent=`Vérification en cours… (${remaining}s)`;
+        try {
+          const r=await fetch(`/api/poll-payment/${payReqId}`);
+          const d=await r.json();
+          if(d.status==='paid'){
+            clearInterval(mPollInterval);
+            window.location.href=`/success.html?req=${payReqId}&method=mobile&type=${selCat_==='abonnement'?'subscription':'service'}`;
+          } else if(d.status==='failed'){
+            clearInterval(mPollInterval);
+            await notifyTimeout(payReqId);
+            window.location.href=`/failed.html?req=${payReqId}&reason=failed`;
+          } else if(attempts>=TIMEOUT_AT){
+            clearInterval(mPollInterval);
+            await notifyTimeout(payReqId);
+            window.location.href=`/failed.html?req=${payReqId}&reason=timeout`;
+          }
+        } catch(e){}
+      }, 5000);
+    }
+
+    async function payMobile(){
+      const btn=document.getElementById('btnPayM');
+      const txt=document.getElementById('btnMTxt');
+      const ld =document.getElementById('mLoad');
+      const err=document.getElementById('mErr');
+      const etx=document.getElementById('mErrTxt');
+      btn.disabled=true; txt.textContent='Envoi en cours…'; ld.classList.remove('hidden'); err.classList.add('hidden');
+
+      const rawPhone=(document.getElementById('phoneInput').value||'').trim().replace(/\s/g,'');
+      const numeroSend = rawPhone.length >= 8 ? rawPhone : null;
+      const type = selCat_==='abonnement' ? 'subscription' : 'service';
+
+      try {
+        let r, d;
+        if(selCat_==='abonnement'){
+          const p=PLANS[selPlanId];
+          r=await fetch('/api/create-payment',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ totalPrice:p.xof, article:[{Abonnement:p.xof}], plan_id:selPlanId, ...(numeroSend?{numeroSend}:{}) })
+          });
+        } else {
+          const desc=(document.getElementById('svcDesc').value||'').trim();
+          r=await fetch('/api/create-service-payment',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ service_type:selCat_, description:desc, amount_xof:svcAmtXof, ...(numeroSend?{numeroSend}:{}) })
+          });
+        }
+        d=await r.json();
+        if(!d.payment_req_id){
+          etx.textContent=d.message||d.error||'Erreur lors du paiement';
+          err.classList.remove('hidden');
+          btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+          return;
+        }
+        // Rediriger vers la page de paiement Money Fusion
+        // (les iframes sont bloquées par les sites de paiement — X-Frame-Options)
+        if(d.url){
+          txt.textContent='Redirection…';
+          window.location.href = d.url;
+        } else {
+          showMWaitScreen(d.payment_req_id);
+        }
+      } catch {
+        etx.textContent='Erreur réseau. Réessayez.';
+        err.classList.remove('hidden');
+        btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+      }
+    }
+
+    // ─── ÉTAPE 4B : Crypto ──────────────────────────────────────────────
+    async function initS4c(){
+      let usdAmount = 0;
+      if(selCat_==='abonnement' && selPlanId){
+        const p=PLANS[selPlanId];
+        usdAmount=p.usd;
+        document.getElementById('s4csub').textContent=`${p.label} — €${p.eur} · ${p.xof.toLocaleString('fr-FR')} XOF`;
+      } else {
+        usdAmount = svcAmtXof / (liveRates.usd_to_xof || 656);
+        const label = selCat_==='telegram' ? 'Service Telegram' : 'Service de Maintenance';
+        document.getElementById('s4csub').textContent=`${label} — ${svcAmtXof.toLocaleString('fr-FR')} XOF`;
+      }
+      try { const r=await fetch('/api/rates'); const d=await r.json(); liveRates=d; } catch(_){}
+
+      selCrypto=null;
+      const box=document.getElementById('cryptoChips'); box.innerHTML='';
+      CRYPTOS.forEach(w=>{
+        const amt=cryptoAmt(w.sym, usdAmount);
+        const d=document.createElement('div'); d.className='crypto-chip';
+        d.innerHTML=`<div class="crypto-sym-badge">${w.icon}</div><div><div class="crypto-chip-name">${w.name}</div><div class="crypto-chip-sym">${w.sym} · ${w.net}</div><div style="color:#F0C040;font-size:.78rem;font-weight:700;margin-top:3px">${amt}</div></div>`;
+        d.onclick=()=>{ selCrypto={...w,amount:amt}; document.querySelectorAll('.crypto-chip').forEach(c=>c.classList.remove('selected')); d.classList.add('selected'); showAddr(selCrypto); };
+        box.appendChild(d);
+      });
+      document.getElementById('addrBlock').style.display='none';
+    }
+
+    function cryptoAmt(sym, usd){
+      if(sym==='USDT') return usd.toFixed(2)+' USDT';
+      if(sym==='BTC')  return (usd/liveRates.btc_usd).toFixed(6)+' BTC';
+      if(sym==='ETH')  return (usd/liveRates.eth_usd).toFixed(5)+' ETH';
+      return usd.toFixed(2)+' '+sym;
+    }
+
+    function showAddr(w){
+      document.getElementById('addrTitle').textContent=w.name;
+      document.getElementById('addrNet').textContent=w.net;
+      document.getElementById('addrVal').textContent=w.addr;
+      document.getElementById('addrAmount').textContent=w.amount||'—';
+      document.getElementById('addrMin').textContent=w.min||'';
+      document.getElementById('addrBlock').style.display='block';
+      const b=document.getElementById('btnCopy');
+      b.innerHTML=`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copier l'adresse`;
+      b.className='btn-copy';
+    }
+
+    function copyAddr(){
+      if(!selCrypto) return;
+      navigator.clipboard.writeText(selCrypto.addr);
+      const b=document.getElementById('btnCopy');
+      b.innerHTML='✓ Copié !'; b.className='btn-copy copied';
+      setTimeout(()=>{ b.innerHTML=`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copier l'adresse`; b.className='btn-copy'; },2500);
+    }
+
+    function copyAmount(){
+      if(!selCrypto?.amount) return;
+      navigator.clipboard.writeText(selCrypto.amount.split(' ')[0]);
+    }
+
+    async function payCrypto(){
+      const err=document.getElementById('cErr');
+      const etx=document.getElementById('cErrTxt');
+      err.classList.add('hidden');
+      if(!selCrypto){ etx.textContent='Veuillez choisir une cryptomonnaie'; err.classList.remove('hidden'); return; }
+      const tx=document.getElementById('txHash').value.trim();
+
+      try {
+        let r, d;
+        if(selCat_==='abonnement'){
+          r=await fetch('/api/create-payment-crypto',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({plan_id:selPlanId, crypto_id:selCrypto.id, transaction_hash:tx})
+          });
+        } else {
+          const desc=(document.getElementById('svcDesc').value||'').trim();
+          r=await fetch('/api/create-service-payment-crypto',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({service_type:selCat_, description:desc, amount_xof:svcAmtXof, crypto_id:selCrypto.id, transaction_hash:tx})
+          });
+        }
+        d=await r.json();
+        if(d.success) window.location.href=`/success.html?req=${d.payment_req_id}&method=crypto&type=${selCat_==='abonnement'?'subscription':'service'}`;
+        else { etx.textContent=d.error||'Erreur'; err.classList.remove('hidden'); }
+      } catch { etx.textContent='Erreur réseau.'; err.classList.remove('hidden'); }
+    }
+
+    // Overlay MF
+    let _mfPollIv=null;
+    function openMfFrame(url,reqId,type){
+      if(_mfPollIv) clearInterval(_mfPollIv);
+      document.getElementById('mfFrame').src=url;
+      document.getElementById('mfOverlay').style.display='flex';
+      _mfPollIv=setInterval(async()=>{
+        try{
+          const r=await fetch('/api/payment-check/'+reqId);
+          const d=await r.json();
+          if(d.status==='validated'){ clearInterval(_mfPollIv); document.getElementById('mfOverlay').style.display='none'; window.location.href='/success.html?req='+reqId+'&method=mobile&type='+(type||'subscription'); }
+        }catch(_){}
+      },3000);
+    }
+    function closeMfFrame(){
+      if(_mfPollIv) clearInterval(_mfPollIv);
+      document.getElementById('mfOverlay').style.display='none';
+      document.getElementById('mfFrame').src='about:blank';
+    }
+
+    // Init
+    setProgress(1);
+    updatePlanPrices();
+  </script>
+</body>
+</html>

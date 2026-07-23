@@ -1,33 +1,48 @@
 services:
   - type: web
-    name: assisnt-payement
-    runtime: python
+    name: sossou-kouame-paiement
+    env: node
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
-    healthCheckPath: /health
+    buildCommand: npm install
+    startCommand: npm start
     envVars:
       - key: PORT
-        value: "10000"
-      - key: BOT_TOKEN
-        sync: false
-      - key: ADMINS
-        sync: false
+        value: 10000
+      - key: NODE_ENV
+        value: production
       - key: DATABASE_URL
+        fromDatabase:
+          name: bonjour
+          property: connectionString
+      - key: SITE_URL
+        value: https://sossou-kouame-paiement.onrender.com
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
         sync: false
-      - key: GEMINI_API_KEYS
+      - key: ADMIN_PASSWORD
         sync: false
-      - key: OPENAI_API_KEYS
+      - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: GROQ_API_KEYS
+      - key: ADMIN_TG_ID
         sync: false
-      - key: DEEPSEEK_API_KEYS
+      - key: TG_API_ID
         sync: false
-      - key: OCR_SPACE_API_KEY
+      - key: TG_API_HASH
         sync: false
-      - key: TELETHON_API_ID
+      - key: TG_SESSION
         sync: false
-      - key: TELETHON_API_HASH
+      - key: ADMIN_EMAIL
         sync: false
-      - key: TELETHON_SESSION
+      - key: GMAIL_USER
         sync: false
+      - key: GMAIL_PASS
+        sync: false
+      - key: MONEY_FUSION_API_URL
+        sync: false
+
+databases:
+  - name: bonjour
+    plan: free
+    databaseName: bonjour
+    user: bonjour_user

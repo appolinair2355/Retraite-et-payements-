@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paiement échoué — Sossou Kouamé Shopping Boutique</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="bg-canvas"></div>
+  <div class="grid-overlay"></div>
+  <div class="stars" id="stars"></div>
+
+  <nav class="navbar">
+    <div class="nav-container">
+      <a href="/" class="logo-link">
+        <img src="logo-sk.png" alt="" class="logo-img" onerror="this.style.display='none'">
+        <span class="logo-text">SOSSOU KOUAMÉ SHOPPING BOUTIQUE</span>
+      </a>
+    </div>
+  </nav>
+
+  <main class="page-main" style="position:relative;z-index:1;display:flex;align-items:center;padding:32px 16px 60px">
+    <div class="container" style="max-width:520px">
+
+      <div class="result-card error-card" style="text-align:center;padding:40px 32px">
+
+        <!-- Icône -->
+        <div id="failIcon" class="result-icon-wrap error" style="font-size:2.8rem;margin-bottom:16px">⏱</div>
+
+        <!-- Titre -->
+        <h2 id="failTitle" style="color:#EF4444;margin:0 0 8px;font-size:1.5rem">Paiement expiré</h2>
+        <p id="failMsg" style="color:rgba(255,255,255,.65);font-size:.92rem;line-height:1.6;margin:0 0 20px">
+          Votre paiement n'a pas été confirmé dans les <strong style="color:#fff">60 secondes</strong> imparties.
+        </p>
+
+        <!-- Détails du paiement -->
+        <div id="failDetails" style="display:none;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:16px 20px;margin-bottom:22px;text-align:left">
+          <div style="color:rgba(255,255,255,.4);font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px">Détails du paiement</div>
+          <div id="failRows"></div>
+        </div>
+
+        <!-- Note contact -->
+        <p style="margin:0 0 20px;font-size:.82rem;color:rgba(255,255,255,.38);line-height:1.5">
+          Si vous avez bien reçu la demande sur votre téléphone et confirmé,<br>
+          contactez le support avec votre référence.
+        </p>
+
+        <!-- Compte à rebours -->
+        <div style="margin-bottom:22px;padding:10px 16px;background:rgba(240,192,64,.07);border:1px solid rgba(240,192,64,.18);border-radius:10px">
+          <span style="color:rgba(255,255,255,.45);font-size:.82rem">Retour automatique à l'accueil dans </span>
+          <strong id="cdSec" style="color:#F0C040;font-size:1.05rem">5</strong>
+          <span style="color:rgba(255,255,255,.45);font-size:.82rem"> secondes…</span>
+        </div>
+
+        <!-- Boutons -->
+        <div style="display:flex;flex-direction:column;gap:11px">
+          <a href="/" class="btn-primary" style="text-decoration:none;text-align:center">← Retour à l'accueil</a>
+          <a href="/payment.html" class="btn-ghost" style="text-decoration:none;text-align:center;padding:12px">🔄 Réessayer le paiement</a>
+          <a href="/support.html" style="color:rgba(255,255,255,.35);font-size:.81rem;text-decoration:none;margin-top:4px">Contacter le support →</a>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ── Étoiles ──
+    (function(){
+      const c=document.getElementById('stars');
+      for(let i=0;i<50;i++){
+        const s=document.createElement('div'); s.className='star';
+        const sz=Math.random()*1.5+.5;
+        s.style.cssText=`width:${sz}px;height:${sz}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--dur:${2+Math.random()*4}s;--delay:${Math.random()*5}s`;
+        c.appendChild(s);
+      }
+    })();
+
+    const params = new URLSearchParams(location.search);
+    const reqId  = params.get('req');
+    const reason = params.get('reason'); // 'timeout' | 'failed' | 'cancelled'
+
+    // ── Adapter titre / icône selon raison ──
+    if(reason === 'failed'){
+      document.getElementById('failIcon').textContent  = '✕';
+      document.getElementById('failTitle').textContent = 'Paiement échoué';
+      document.getElementById('failMsg').innerHTML     = 'Votre paiement a été <strong style="color:#EF4444">refusé ou annulé</strong>.<br>Vérifiez votre solde Mobile Money ou réessayez.';
+    } else if(reason === 'cancelled'){
+      document.getElementById('failIcon').textContent  = '↩';
+      document.getElementById('failTitle').textContent = 'Paiement annulé';
+      document.getElementById('failMsg').innerHTML     = 'Vous avez annulé le paiement. Vous pouvez réessayer à tout moment.';
+    }
+
+    // ── Compte à rebours 5s → accueil ──
+    let sec = 5;
+    const tick = setInterval(()=>{
+      sec--;
+      const el = document.getElementById('cdSec');
+      if(el) el.textContent = sec;
+      if(sec <= 0){ clearInterval(tick); window.location.href = '/'; }
+    }, 1000);
+
+    // ── Récupérer détails du paiement (route publique) ──
+    if(reqId){
+      fetch(`/api/payment-info/${reqId}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if(!d) return;
+          const now = new Date();
+          const dateStr = now.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit', year:'numeric'});
+          const timeStr = now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+
+          // Formatage de la date de création si dispo
+          let createdStr = '';
+          if(d.created_at){
+            const c = new Date(d.created_at);
+            createdStr = c.toLocaleString('fr-FR', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
+          }
+
+          const row = (label, val, color) =>
+            `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:.87rem">
+               <span style="color:rgba(255,255,255,.45)">${label}</span>
+               <strong style="color:${color||'#fff'};text-align:right;max-width:60%">${val}</strong>
+             </div>`;
+
+          let html = '';
+          if(d.plan_label)     html += row('Service',    d.plan_label);
+          if(d.amount_xof > 0) html += row('Montant',    `${d.amount_xof.toLocaleString('fr-FR')} XOF`, '#F0C040');
+          if(d.phone_number)   html += row('Téléphone',  d.phone_number);
+          if(d.payment_method) html += row('Méthode',    d.payment_method.replace('_',' '));
+          html += row('Date', dateStr);
+          html += row('Heure', timeStr);
+          if(createdStr)       html += row('Initié le',  createdStr, 'rgba(255,255,255,.55)');
+          html += row('Réf.',  `#${reqId}`, 'rgba(255,255,255,.45)');
+          html += row('Statut', reason === 'failed' ? '✗ Refusé' : reason === 'cancelled' ? '↩ Annulé' : '⏱ Expiré', '#EF4444');
+
+          document.getElementById('failRows').innerHTML    = html;
+          document.getElementById('failDetails').style.display = 'block';
+
+          // Notifier admin si timeout (cas où success.html ne l'a pas fait)
+          if(reason === 'timeout'){
+            fetch('/api/notify-timeout', {
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({ payment_req_id: reqId })
+            }).catch(()=>{});
+          }
+        }).catch(()=>{});
+    }
+  </script>
+</body>
+</html>

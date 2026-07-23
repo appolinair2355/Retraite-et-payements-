@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Site de paiement Sossou Kouamé Shopping Boutique</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* ── LAYOUT ── */
+    .page { display:none; flex-direction:column; align-items:center; min-height:100vh; padding:32px 16px 60px; position:relative; z-index:1; }
+    .page.active { display:flex; }
+
+    /* ── LOGO PLEINE LARGEUR ── */
+    .logo-card {
+      width: 100%;
+      max-width: 500px;
+      border-radius: 22px;
+      margin-bottom: 28px;
+      box-shadow: 0 0 48px rgba(0,150,255,.4), 0 12px 40px rgba(0,0,0,.5);
+      /* Ratio du PNG original : 1024×559 */
+      position: relative;
+      overflow: hidden;
+    }
+    /* Wrapper qui fixe la hauteur visible */
+    .logo-card-inner {
+      position: relative;
+      width: 100%;
+      /* ratio naturel du PNG : 559/1024 = 54.59% — on en montre ~80% en hauteur */
+      padding-bottom: 44%;
+      background: #fff;
+      overflow: hidden;
+      border-radius: 22px;
+    }
+    .logo-card img {
+      position: absolute;
+      /* Zoom léger 108% pour juste couper les fines marges blanches */
+      top: 50%;
+      left: 50%;
+      width: 108%;
+      height: auto;
+      transform: translate(-50%, -50%);
+      display: block;
+    }
+
+    /* ── MARQUE (pages intérieures) ── */
+    .page-brand {
+      text-align: center;
+      margin-bottom: 28px;
+      width: 100%;
+      max-width: 520px;
+    }
+    .page-brand-logo {
+      height: 54px;
+      width: auto;
+      border-radius: 10px;
+      overflow: hidden;
+      display: inline-block;
+      margin-bottom: 10px;
+    }
+    .page-brand-logo img { height: 54px; width: auto; display: block; }
+    .page-brand h1 {
+      font-size: clamp(.95rem, 3.5vw, 1.25rem);
+      font-weight: 800;
+      color: #F0C040;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      margin: 0 0 4px;
+    }
+    .page-brand p { color: rgba(255,255,255,.45); font-size: .82rem; margin: 0; }
+
+    /* ── ACCUEIL : DEUX PANNEAUX ── */
+    .panels {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 100%;
+      max-width: 460px;
+    }
+    .panel-btn {
+      width: 100%;
+      border: none;
+      border-radius: 20px;
+      padding: 0;
+      cursor: pointer;
+      background: none;
+      text-align: left;
+      transition: transform .18s;
+    }
+    .panel-btn:hover { transform: translateY(-3px); }
+    .panel-btn:active { transform: translateY(0); }
+    .panel-inner {
+      border-radius: 20px;
+      padding: 26px 22px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .panel-don .panel-inner  { background: linear-gradient(135deg, rgba(240,192,64,.18), rgba(249,115,22,.12)); border: 1.5px solid rgba(240,192,64,.4); }
+    .panel-serv .panel-inner { background: linear-gradient(135deg, rgba(99,102,241,.18), rgba(16,185,129,.1));  border: 1.5px solid rgba(99,102,241,.4);  }
+    .panel-icon { font-size: 2.2rem; flex-shrink: 0; line-height: 1; }
+    .panel-text h2 { font-size: 1rem; font-weight: 700; margin: 0 0 4px; color: #fff; }
+    .panel-don  .panel-text h2  { color: #F0C040; }
+    .panel-serv .panel-text h2 { color: #a5b4fc; }
+    .panel-text p { font-size: .8rem; color: rgba(255,255,255,.5); margin: 0; line-height: 1.45; }
+    .panel-arrow { margin-left:auto; font-size:1.6rem; color:rgba(255,255,255,.3); flex-shrink:0; }
+    .panel-btn:hover .panel-arrow { color: rgba(255,255,255,.8); }
+
+    /* ── TIERS GRID ── */
+    .tiers-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+      gap: 12px;
+      width: 100%;
+      max-width: 520px;
+      margin-top: 4px;
+    }
+    .tier-card {
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 16px;
+      padding: 16px;
+      cursor: pointer;
+      transition: all .2s;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      position: relative;
+    }
+    .tier-card:hover { border-color: rgba(240,192,64,.5); transform: translateY(-3px); background: rgba(240,192,64,.07); }
+    .tier-badge { position:absolute;top:10px;right:10px;font-size:.58rem;font-weight:700;padding:2px 7px;border-radius:100px;letter-spacing:.05em;text-transform:uppercase; }
+    .tier-icon { font-size: 1.5rem; line-height: 1; }
+    .tier-label { color: #fff; font-weight: 700; font-size: .9rem; }
+    .tier-price { color: #F0C040; font-weight: 800; font-size: 1.05rem; margin-top: auto; }
+    .tier-price small { color: rgba(255,255,255,.4); font-size: .68rem; font-weight: 400; margin-left: 5px; }
+    .tier-cta { margin-top:8px; background:rgba(240,192,64,.12); color:#F0C040; border:1px solid rgba(240,192,64,.3); border-radius:8px; padding:7px; font-size:.78rem; font-weight:600; text-align:center; }
+    .tier-card:hover .tier-cta { background: rgba(240,192,64,.22); }
+    @media(max-width:440px){ .tiers-grid{ grid-template-columns:repeat(2,1fr); } }
+
+    /* ── LOGIN ── */
+    .login-card { background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.09); border-radius:20px; padding:26px 22px; width:100%; max-width:460px; }
+    .login-form-inner { display:flex; flex-direction:column; gap:14px; margin-top:16px; }
+
+    /* ── MODAL ── */
+    .modal-overlay { display:none; position:fixed; inset:0; z-index:200; background:rgba(0,0,0,.8); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:16px; }
+    .modal-overlay.open { display:flex; }
+    .modal-box { background:#0e1628; border:1px solid rgba(240,192,64,.28); border-radius:20px; max-width:440px; width:100%; padding:28px; position:relative; max-height:92vh; overflow-y:auto; }
+    .modal-close { position:absolute;top:14px;right:14px;background:none;border:none;color:rgba(255,255,255,.5);font-size:1.4rem;cursor:pointer;line-height:1; }
+    .modal-close:hover { color:#fff; }
+
+    .form-label-sm { display:block; font-size:.78rem; font-weight:600; color:rgba(255,255,255,.55); letter-spacing:.07em; text-transform:uppercase; margin-bottom:6px; }
+    select.input-field { width:100%; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:10px; color:#fff; padding:12px 14px; font-size:.9rem; outline:none; font-family:'Poppins',sans-serif; }
+    select.input-field option { background:#0e1628; }
+    .network-chips { display:flex; flex-wrap:wrap; gap:8px; }
+    .net-chip { display:flex; align-items:center; gap:6px; padding:8px 14px; border-radius:100px; border:1.5px solid rgba(255,255,255,.15); background:rgba(255,255,255,.05); color:rgba(255,255,255,.8); font-size:.82rem; font-weight:600; cursor:pointer; transition:all .15s; }
+    .net-chip.selected { border-color:#F0C040; background:rgba(240,192,64,.12); color:#F0C040; }
+    .net-dot { width:9px; height:9px; border-radius:50%; }
+    .phone-row { display:flex; gap:10px; align-items:center; }
+    .phone-prefix { display:flex; align-items:center; gap:5px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:11px 12px; font-size:.88rem; font-weight:600; color:#fff; white-space:nowrap; flex-shrink:0; }
+    .pay-err { background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.3); border-radius:10px; padding:10px 14px; color:#FCA5A5; font-size:.82rem; display:flex; align-items:center; gap:8px; }
+    .hidden { display:none !important; }
+    .mt-2 { margin-top:8px; }
+
+    .section-title { color:#F0C040; font-size:1rem; font-weight:700; margin:0 0 4px; }
+    .section-sub { color:rgba(255,255,255,.5); font-size:.82rem; margin:0 0 2px; line-height:1.5; }
+    .loader-txt { text-align:center; padding:40px; color:rgba(255,255,255,.4); font-size:.88rem; }
+    .footer-note { text-align:center; color:rgba(255,255,255,.2); font-size:.72rem; margin-top:36px; }
+  </style>
+</head>
+<body class="login-page">
+
+  <div class="bg-canvas"></div>
+  <div class="grid-overlay"></div>
+  <div class="stars" id="stars"></div>
+  <!-- Floating particles -->
+  <div class="particle" style="left:8%;top:20%;--p-dur:7s;--p-delay:0s;opacity:.25"></div>
+  <div class="particle" style="left:92%;top:35%;--p-dur:9s;--p-delay:1.5s;width:6px;height:6px;opacity:.2"></div>
+  <div class="particle" style="left:15%;top:75%;--p-dur:8s;--p-delay:3s;opacity:.3"></div>
+  <div class="particle" style="left:85%;top:70%;--p-dur:6s;--p-delay:0.8s;width:3px;height:3px"></div>
+  <div class="particle" style="left:50%;top:10%;--p-dur:10s;--p-delay:2s;opacity:.2"></div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE 0 — ACCUEIL (deux panneaux)
+  ══════════════════════════════════════════ -->
+  <div class="page active" id="pg-home">
+    <!-- Logo pleine largeur -->
+    <div class="logo-card">
+      <div class="logo-card-inner">
+        <img src="logo-sk.png" alt="Logo Sossou Kouamé"
+             onerror="this.closest('.logo-card').style.display='none'">
+      </div>
+    </div>
+
+    <!-- Tagline animée -->
+    <p class="home-tagline" style="animation:fadeUp .5s .05s ease both">
+      Paiement <span>Mobile Money</span> &amp; <span>Crypto</span> sécurisé
+    </p>
+    <div class="sep-gold" style="animation:fadeIn .6s .15s ease both"></div>
+    <p style="color:rgba(255,255,255,.4);font-size:.82rem;margin:0 0 24px;letter-spacing:.04em;animation:fadeUp .5s .2s ease both">
+      Choisissez une option pour continuer
+    </p>
+
+    <div class="panels">
+      <button class="panel-btn panel-don" onclick="goto('don')">
+        <div class="panel-inner">
+          <div class="panel-icon">💖</div>
+          <div class="panel-text">
+            <h2>Soutenir le développeur</h2>
+            <p>Faire un don — aucun compte requis.<br>Choisissez votre palier et payez directement.</p>
+          </div>
+          <div class="panel-arrow">›</div>
+        </div>
+      </button>
+
+      <button class="panel-btn panel-serv" onclick="goto('login')">
+        <div class="panel-inner">
+          <div class="panel-icon">💳</div>
+          <div class="panel-text">
+            <h2>Payer un service</h2>
+            <p>Abonnements &amp; boutique — connexion requise.</p>
+          </div>
+          <div class="panel-arrow">›</div>
+        </div>
+      </button>
+
+      <button class="panel-btn" id="btnTelegram" onclick="openTelegramBot()" style="margin-top:4px">
+        <div class="panel-inner" style="background:linear-gradient(135deg,rgba(0,136,204,.15),rgba(99,102,241,.1));border:1.5px solid rgba(0,136,204,.35)">
+          <div class="panel-icon">🤖</div>
+          <div class="panel-text">
+            <h2 style="color:#60C8F5">Accéder via Telegram</h2>
+            <p>Connectez-vous ou inscrivez-vous via le bot.</p>
+          </div>
+          <div class="panel-arrow">›</div>
+        </div>
+      </button>
+    </div>
+
+    <!-- Indicateurs de confiance -->
+    <div style="display:flex;gap:20px;margin-top:28px;flex-wrap:wrap;justify-content:center;animation:fadeUp .5s .4s ease both">
+      <div style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.35);font-size:.72rem">
+        <span style="color:#10B981;font-size:.9rem">🔒</span> Paiement sécurisé
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.35);font-size:.72rem">
+        <span style="color:#F0C040;font-size:.9rem">⚡</span> Confirmation instantanée
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.35);font-size:.72rem">
+        <span style="color:#60C8F5;font-size:.9rem">📱</span> Mobile Money & Crypto
+      </div>
+    </div>
+
+    <!-- Bouton déconnexion visible si déjà connecté -->
+    <div id="alreadyLoggedIn" style="display:none;margin-top:20px;text-align:center">
+      <p style="color:rgba(255,255,255,.5);font-size:.82rem;margin:0 0 10px">Vous êtes déjà connecté(e)</p>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        <a href="/dashboard.html" style="background:rgba(240,192,64,.15);border:1px solid rgba(240,192,64,.4);color:#F0C040;padding:9px 20px;border-radius:10px;font-size:.85rem;font-weight:700;text-decoration:none">📊 Mon espace</a>
+        <button onclick="doLogout()" style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#FCA5A5;padding:9px 20px;border-radius:10px;font-size:.85rem;font-weight:700;cursor:pointer">🚪 Se déconnecter</button>
+      </div>
+    </div>
+
+    <p class="footer-note" style="animation:fadeIn .8s .5s ease both">© 2026 Sossou Kouamé Shopping Boutique — Tous droits réservés</p>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE 1 — SOUTIEN / DON
+  ══════════════════════════════════════════ -->
+  <div class="page" id="pg-don">
+    <div class="page-brand" style="max-width:520px">
+      <div class="page-brand-logo">
+        <img src="logo-sk.png" alt="Logo"
+             onerror="this.closest('.page-brand-logo').style.display='none'">
+      </div>
+      <h1>💖 Soutenir le développeur</h1>
+      <p>Aucun compte requis — choisissez un palier et payez via Mobile Money</p>
+    </div>
+
+    <div id="tiersLoader" class="loader-txt">Chargement des paliers…</div>
+    <div id="tiersGrid" class="tiers-grid" style="display:none"></div>
+
+    <p class="footer-note" style="margin-top:24px">Appuyez sur ← Retour pour revenir à l'accueil</p>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE 2 — CONNEXION
+  ══════════════════════════════════════════ -->
+  <div class="page" id="pg-login">
+    <div class="page-brand">
+      <div class="page-brand-logo">
+        <img src="logo-sk.png" alt="Logo"
+             onerror="this.closest('.page-brand-logo').style.display='none'">
+      </div>
+      <h1 style="color:#a5b4fc">💳 Connexion à votre compte</h1>
+      <p>Entrez vos identifiants pour accéder à vos abonnements et à la boutique</p>
+    </div>
+
+    <div class="login-card">
+      <form id="loginForm" onsubmit="handleLogin(event)">
+        <div class="login-form-inner">
+          <div class="form-group">
+            <label class="form-label-sm" for="username">Identifiant</label>
+            <div class="input-wrapper">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+              </svg>
+              <input type="text" id="username" placeholder="Email ou nom d'utilisateur" autocomplete="username" required>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label-sm" for="password">Mot de passe</label>
+            <div class="input-wrapper">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+              <input type="password" id="password" placeholder="Mot de passe" autocomplete="current-password" required>
+              <button type="button" class="toggle-pwd" onclick="togglePwd()" tabindex="-1">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div id="loginErr" class="login-error hidden">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span id="loginErrText"></span>
+          </div>
+
+          <button type="submit" class="btn-login" id="loginBtn">
+            <span id="loginBtnTxt">Se connecter</span>
+            <span class="btn-loader hidden" id="loginLoad"></span>
+          </button>
+
+          <p style="text-align:center;font-size:.8rem;color:rgba(255,255,255,.4);margin:12px 0 0">
+            Pas encore de compte ?
+            <a href="/register.html" style="color:#F0C040;font-size:.8rem;text-decoration:underline;font-weight:600">Créer un compte 📝</a>
+          </p>
+          <p id="tgAltWrap" style="text-align:center;font-size:.76rem;color:rgba(255,255,255,.3);margin:2px 0 0" class="hidden">
+            ou <a id="tgRegLink" href="#" target="_blank" style="color:#60C8F5;text-decoration:underline">via le bot Telegram 🤖</a>
+          </p>
+        </div>
+      </form>
+    </div>
+
+    <p class="footer-note" style="margin-top:24px">Appuyez sur ← Retour pour revenir à l'accueil</p>
+  </div>
+
+  <!-- ══ MODAL PAIEMENT DON ══ -->
+  <div class="modal-overlay" id="payModal">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeModal()">✕</button>
+      <div style="font-size:2rem;margin-bottom:6px" id="modalIcon">💖</div>
+      <h3 id="modalTitle" style="color:#F0C040;font-size:1.1rem;margin:0 0 3px;padding-right:24px"></h3>
+      <p style="color:rgba(255,255,255,.5);font-size:.82rem;margin:0 0 4px">Soutien au développeur</p>
+      <div id="modalPrice" style="color:#10B981;font-weight:800;font-size:1.3rem;margin-bottom:18px"></div>
+
+      <!-- Nom (caché si connecté) -->
+      <div id="donorNameBlock" style="margin-bottom:14px">
+        <label class="form-label-sm">Votre nom (facultatif)</label>
+        <div class="input-wrapper" style="margin-top:0">
+          <input type="text" id="donorName" placeholder="Ex : Jean Dupont" style="padding-left:14px">
+        </div>
+      </div>
+
+      <!-- Pays -->
+      <div style="margin-bottom:14px">
+        <label class="form-label-sm">Pays</label>
+        <select id="countrySelect" class="input-field" onchange="onCountry()">
+          <option value="" disabled selected>Sélectionner un pays</option>
+        </select>
+      </div>
+
+      <!-- Réseau -->
+      <div id="netGrp" class="hidden mt-2" style="margin-bottom:14px">
+        <label class="form-label-sm">Réseau Mobile Money</label>
+        <div class="network-chips" id="netChips"></div>
+      </div>
+
+      <!-- Téléphone -->
+      <div id="phoneGrp" class="hidden mt-2" style="margin-bottom:14px">
+        <label class="form-label-sm">Numéro à débiter</label>
+        <div class="phone-row">
+          <div class="phone-prefix">
+            <span id="flag">🌍</span>
+            <span id="code">+</span>
+          </div>
+          <div class="input-wrapper" style="flex:1;margin:0">
+            <input type="tel" id="phoneInput" placeholder="Ex: 20 21 12 34" maxlength="15" oninput="chkPay()" style="padding-left:14px">
+          </div>
+        </div>
+      </div>
+
+      <div id="payErr" class="pay-err hidden mt-2" style="margin-bottom:10px">
+        <span>⚠</span><span id="payErrTxt"></span>
+      </div>
+
+      <button id="btnPay" onclick="doPay()" class="btn-primary hidden" style="width:100%">
+        <span id="btnPayTxt">💳 Payer maintenant</span>
+        <span class="btn-loader hidden" id="payLoad"></span>
+      </button>
+
+      <!-- ÉCRAN D'ATTENTE (affiché après envoi USSD) -->
+      <div id="waitScreen" class="hidden" style="text-align:center;padding:10px 0">
+        <div style="font-size:3rem;margin-bottom:12px">📱</div>
+        <p style="color:#10B981;font-weight:700;font-size:1rem;margin:0 0 6px">Demande envoyée !</p>
+        <p style="color:rgba(255,255,255,.65);font-size:.85rem;margin:0 0 16px;line-height:1.5">
+          Un message de confirmation va apparaître sur votre téléphone.<br>
+          <strong style="color:#F0C040">Confirmez le paiement sur votre téléphone.</strong>
+        </p>
+        <div class="btn-loader" style="display:inline-block;margin-bottom:14px"></div>
+        <p id="waitStatus" style="color:rgba(255,255,255,.4);font-size:.78rem;margin:0">Vérification en cours…</p>
+        <button onclick="cancelWait()" style="margin-top:14px;background:none;border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.5);border-radius:8px;padding:7px 18px;cursor:pointer;font-size:.78rem">
+          Annuler
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── ÉTOILES ──
+    (function(){
+      const c=document.getElementById('stars');
+      for(let i=0;i<80;i++){
+        const s=document.createElement('div'); s.className='star';
+        const sz=Math.random()*2+1;
+        s.style.cssText=`width:${sz}px;height:${sz}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--dur:${2+Math.random()*4}s;--delay:${Math.random()*4}s`;
+        c.appendChild(s);
+      }
+    })();
+
+    // ── Auth check ──
+    fetch('/api/me').then(r=>{
+      if(r.ok){
+        // Déjà connecté : afficher les options sur la home au lieu de rediriger
+        document.getElementById('alreadyLoggedIn').style.display = '';
+      }
+    }).catch(()=>{});
+
+    // ── ROUTEUR (History API) ──
+    const PAGES = { home:'pg-home', don:'pg-don', login:'pg-login' };
+    let current = 'home';
+
+    function showPage(name) {
+      Object.values(PAGES).forEach(id => document.getElementById(id).classList.remove('active'));
+      document.getElementById(PAGES[name] || PAGES.home).classList.add('active');
+      current = name;
+      window.scrollTo(0,0);
+      if(name==='don') loadTiers();
+    }
+
+    function goto(name) {
+      history.pushState({ page: name }, '', '#' + name);
+      showPage(name);
+    }
+
+    window.addEventListener('popstate', e => {
+      const p = (e.state && e.state.page) || 'home';
+      showPage(p);
+    });
+
+    // Gérer le rechargement avec hash
+    (function(){
+      const hash = location.hash.replace('#','');
+      if(hash && PAGES[hash]) {
+        history.replaceState({ page: hash }, '', '#' + hash);
+        showPage(hash);
+      } else {
+        history.replaceState({ page: 'home' }, '', location.pathname);
+        showPage('home');
+      }
+    })();
+
+    // ── PALIERS ──
+    let tiersLoaded = false;
+    const COUNTRIES = {
+      bj:{name:'Bénin',         flag:'🇧🇯',code:'+229',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'moov',n:'Moov',c:'#FF6600'},{k:'celtiis',n:'Celtiis',c:'#00A859'}]},
+      ci:{name:"Côte d'Ivoire", flag:'🇨🇮',code:'+225',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'},{k:'wave',n:'Wave',c:'#1CE5BD'}]},
+      bf:{name:'Burkina Faso',  flag:'🇧🇫',code:'+226',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      tg:{name:'Togo',          flag:'🇹🇬',code:'+228',nets:[{k:'tmoney',n:'T-Money',c:'#0066CC'},{k:'moov',n:'Moov',c:'#FF6600'}]},
+      sn:{name:'Sénégal',       flag:'🇸🇳',code:'+221',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'wave',n:'Wave',c:'#1CE5BD'},{k:'free',n:'Free',c:'#DA291C'}]},
+      ml:{name:'Mali',          flag:'🇲🇱',code:'+223',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      gh:{name:'Ghana',         flag:'🇬🇭',code:'+233',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'vodafone',n:'Vodafone',c:'#E60000'}]},
+      ng:{name:'Nigeria',       flag:'🇳🇬',code:'+234',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'airtel',n:'Airtel',c:'#E60000'}]},
+      cm:{name:'Cameroun',      flag:'🇨🇲',code:'+237',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'}]},
+      fr:{name:'France',        flag:'🇫🇷',code:'+33', nets:[{k:'orange',n:'Orange',c:'#FF6600'}]},
+    };
+    let selTier=null, selCountry=null, selNet=null, loggedUser=null;
+
+    // Vérifier si l'utilisateur est connecté au chargement
+    (async function checkLogin(){
+      try {
+        const r = await fetch('/api/me');
+        if(r.ok) loggedUser = await r.json();
+      } catch(e) {}
+    })();
+
+    function tierIcon(p){ return p>=100000?'👑':p>=50000?'🏆':p>=25000?'💎':p>=10000?'⭐':p>=5000?'🥇':p>=2000?'🥈':p>=1000?'🥉':'💖'; }
+    function tierBadge(p){
+      if(p>=100000) return {t:'Mythique',c:'#EC4899'};
+      if(p>=50000)  return {t:'Prestige', c:'#8B5CF6'};
+      if(p>=25000)  return {t:'Diamant',  c:'#06B6D4'};
+      if(p>=10000)  return {t:'Or+',      c:'#F0C040'};
+      if(p>=5000)   return {t:'Argent+',  c:'#94A3B8'};
+      if(p>=1000)   return {t:'Bronze',   c:'#F97316'};
+      return null;
+    }
+
+    async function loadTiers(){
+      if(tiersLoaded) return;
+      try{
+        const r = await fetch('/api/support-tiers');
+        const d = await r.json();
+        const g = document.getElementById('tiersGrid');
+        g.innerHTML = '';
+        (d.tiers||[]).forEach(t=>{
+          const b = tierBadge(t.price_xof);
+          const usd = (t.price_xof/650).toFixed(2);
+          const el = document.createElement('div');
+          el.className = 'tier-card';
+          el.onclick = ()=>openModal(t);
+          el.innerHTML=`
+            ${b?`<div class="tier-badge" style="background:${b.c}22;color:${b.c};border:1px solid ${b.c}44">${b.t}</div>`:''}
+            <div class="tier-icon">${tierIcon(t.price_xof)}</div>
+            <div class="tier-label">${t.label}</div>
+            <div class="tier-price">${Number(t.price_xof).toLocaleString('fr-FR')} FCFA<small>≈ $${usd}</small></div>
+            <div class="tier-cta">💳 Soutenir</div>
+          `;
+          g.appendChild(el);
+        });
+        document.getElementById('tiersLoader').style.display='none';
+        g.style.display='grid';
+        tiersLoaded = true;
+      }catch(e){
+        document.getElementById('tiersLoader').textContent='Erreur de chargement. Vérifiez votre connexion.';
+      }
+    }
+
+    function openModal(tier){
+      selTier=tier; selCountry=null; selNet=null;
+      document.getElementById('modalIcon').textContent=tierIcon(tier.price_xof);
+      document.getElementById('modalTitle').textContent=tier.label;
+      document.getElementById('modalPrice').textContent=Number(tier.price_xof).toLocaleString('fr-FR')+' FCFA';
+      // Si connecté : nom auto depuis la session, cacher le champ nom
+      const nameBlock = document.getElementById('donorNameBlock');
+      if(loggedUser) {
+        nameBlock.style.display = 'none';
+      } else {
+        nameBlock.style.display = '';
+        document.getElementById('donorName').value = '';
+      }
+      const sel=document.getElementById('countrySelect');
+      sel.innerHTML='<option value="" disabled selected>Sélectionner un pays</option>';
+      Object.entries(COUNTRIES).forEach(([k,v])=>{
+        const o=document.createElement('option'); o.value=k;
+        o.textContent=`${v.flag} ${v.name}`; sel.appendChild(o);
+      });
+      document.getElementById('netGrp').classList.add('hidden');
+      document.getElementById('phoneGrp').classList.add('hidden');
+      document.getElementById('phoneInput').value='';
+      document.getElementById('btnPay').classList.add('hidden');
+      document.getElementById('payErr').classList.add('hidden');
+      document.getElementById('payModal').classList.add('open');
+    }
+    function closeModal(){ document.getElementById('payModal').classList.remove('open'); selTier=null; }
+
+    function onCountry(){
+      const k=document.getElementById('countrySelect').value;
+      selCountry=COUNTRIES[k]; selNet=null;
+      if(!selCountry) return;
+      document.getElementById('flag').textContent=selCountry.flag;
+      document.getElementById('code').textContent=selCountry.code;
+      const box=document.getElementById('netChips'); box.innerHTML='';
+      selCountry.nets.forEach(net=>{
+        const d=document.createElement('div'); d.className='net-chip';
+        d.innerHTML=`<span class="net-dot" style="background:${net.c}"></span>${net.n}`;
+        d.onclick=()=>{
+          selNet=net;
+          document.querySelectorAll('#netChips .net-chip').forEach(c=>c.classList.remove('selected'));
+          d.classList.add('selected');
+          chkPay();
+        };
+        box.appendChild(d);
+      });
+      document.getElementById('netGrp').classList.remove('hidden');
+      document.getElementById('phoneGrp').classList.remove('hidden');
+      chkPay();
+    }
+
+    function chkPay(){
+      const phone=(document.getElementById('phoneInput').value||'').trim();
+      document.getElementById('btnPay').classList.toggle('hidden', !(selTier&&selNet&&selCountry&&phone.length>=8));
+    }
+
+    let pollInterval = null;
+
+    async function notifyTimeout(payReqId) {
+      try {
+        await fetch('/api/notify-timeout', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            payment_req_id: payReqId,
+            country: selCountry ? selCountry.name : '',
+            network: selNet    ? selNet.n         : ''
+          })
+        });
+      } catch(e) {}
+    }
+
+    function showWaitScreen(payReqId, type) {
+      document.getElementById('btnPay').classList.add('hidden');
+      document.getElementById('payErr').classList.add('hidden');
+      document.getElementById('netGrp').classList.add('hidden');
+      document.getElementById('phoneGrp').classList.add('hidden');
+      document.querySelectorAll('#payModal .modal-box > div:not(#waitScreen)').forEach(el => {
+        if(!el.id || !['modalIcon','modalTitle'].includes(el.id)) el.style.display='none';
+      });
+      document.getElementById('waitScreen').classList.remove('hidden');
+      let attempts = 0;
+      const TIMEOUT_AT = 12; // 12×5s = 60s
+      pollInterval = setInterval(async () => {
+        attempts++;
+        const st = document.getElementById('waitStatus');
+        const remaining = Math.max(0, (TIMEOUT_AT - attempts) * 5);
+        if(st) st.textContent = `Vérification en cours… (${remaining}s)`;
+        try {
+          const r = await fetch(`/api/poll-payment/${payReqId}`);
+          const d = await r.json();
+          if (d.status === 'paid') {
+            clearInterval(pollInterval);
+            window.location.href = `/success.html?req=${payReqId}&type=${type}`;
+          } else if (d.status === 'failed') {
+            clearInterval(pollInterval);
+            await notifyTimeout(payReqId);
+            window.location.href = `/failed.html?req=${payReqId}&reason=failed`;
+          } else if (attempts >= TIMEOUT_AT) {
+            clearInterval(pollInterval);
+            await notifyTimeout(payReqId);
+            window.location.href = `/failed.html?req=${payReqId}&reason=timeout`;
+          }
+        } catch(e) { /* continue */ }
+      }, 5000);
+    }
+
+    function cancelWait() {
+      clearInterval(pollInterval);
+      closeModal();
+    }
+
+    async function doPay(){
+      if(!selTier) return;
+      const btn=document.getElementById('btnPay'), txt=document.getElementById('btnPayTxt');
+      const ld=document.getElementById('payLoad'), err=document.getElementById('payErr');
+      const etx=document.getElementById('payErrTxt');
+      btn.disabled=true; txt.textContent='Envoi en cours…'; ld.classList.remove('hidden'); err.classList.add('hidden');
+      const rawPhone = document.getElementById('phoneInput').value.trim().replace(/\s/g,'');
+      // Si connecté : utiliser le nom du compte, sinon le champ saisi
+      const nom = loggedUser
+        ? ([loggedUser.first_name, loggedUser.last_name].filter(Boolean).join(' ') || loggedUser.username || 'Donateur')
+        : ((document.getElementById('donorName').value||'').trim()||'Donateur');
+      const numeroSend = rawPhone;
+      try{
+        const r=await fetch('/api/create-support-public',{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ tier_id:selTier.id, numeroSend, nomclient:nom })
+        });
+        const d=await r.json();
+        if(!d.payment_req_id){
+          etx.textContent=d.error||d.message||'Erreur lors du paiement';
+          err.classList.remove('hidden');
+          btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+          return;
+        }
+        // Rediriger vers la page de paiement Money Fusion
+        // (les iframes sont bloquées par les sites de paiement — X-Frame-Options)
+        if(d.url){
+          txt.textContent='Redirection…';
+          window.location.href = d.url;
+        } else {
+          showWaitScreen(d.payment_req_id, 'support');
+        }
+      }catch{
+        etx.textContent='Erreur réseau. Réessayez.';
+        err.classList.remove('hidden');
+        btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+      }
+    }
+
+    // ── LOGIN ──
+    async function handleLogin(e){
+      e.preventDefault();
+      const btn=document.getElementById('loginBtn'), txt=document.getElementById('loginBtnTxt');
+      const ld=document.getElementById('loginLoad'), err=document.getElementById('loginErr');
+      const etx=document.getElementById('loginErrText');
+      btn.disabled=true; txt.textContent='Connexion…'; ld.classList.remove('hidden'); err.classList.add('hidden');
+      try{
+        const r=await fetch('/api/login',{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ username:document.getElementById('username').value.trim(), password:document.getElementById('password').value })
+        });
+        const d=await r.json();
+        if(r.ok&&d.success){
+          txt.textContent='✓ Bienvenue !';
+          const meRes=await fetch('/api/me');
+          const me=meRes.ok?await meRes.json():{};
+          setTimeout(()=>window.location.href=me.is_admin?'/admin.html':'/dashboard.html',400);
+        } else {
+          etx.textContent=d.error||'Identifiant ou mot de passe incorrect';
+          err.classList.remove('hidden');
+          btn.disabled=false; txt.textContent='Se connecter'; ld.classList.add('hidden');
+        }
+      }catch{
+        etx.textContent='Erreur réseau. Vérifiez votre connexion.';
+        err.classList.remove('hidden');
+        btn.disabled=false; txt.textContent='Se connecter'; ld.classList.add('hidden');
+      }
+    }
+    function togglePwd(){ const i=document.getElementById('password'); i.type=i.type==='password'?'text':'password'; }
+
+   // ── OUVERTURE VIA SITE WEB ──
+let _siteUrl = '';
+
+fetch('/api/config')
+  .then(r => r.json())
+  .then(d => {
+    _siteUrl = d.site_url || '';
+
+    const link = _siteUrl ? _siteUrl : '#';
+    const siteLink = document.getElementById('siteLink');
+
+    if (siteLink) siteLink.href = link;
+  })
+  .catch(() => {});
+
+function openWebsite(){
+  const url = _siteUrl ? _siteUrl : '#';
+  if (url !== '#') window.open(url, '_blank');
+}
+
+    // ── DÉCONNEXION ──
+    async function doLogout(){
+      try{ await fetch('/api/logout',{method:'POST'}); }catch(_){}
+      document.getElementById('alreadyLoggedIn').style.display='none';
+      window.location.reload();
+    }
+
+    // ── OVERLAY MONEY FUSION ──
+    let _mfPollIv=null;
+    function openMfFrame(url, reqId, type){
+      if(_mfPollIv) clearInterval(_mfPollIv);
+      document.getElementById('mfFrame').src=url;
+      document.getElementById('mfOverlay').style.display='flex';
+      _mfPollIv=setInterval(async()=>{
+        try{
+          const r=await fetch('/api/poll-payment/'+reqId);
+          const d=await r.json();
+          if(d.status==='paid'){
+            clearInterval(_mfPollIv);
+            document.getElementById('mfOverlay').style.display='none';
+            window.location.href='/success.html?req='+reqId+'&type='+(type||'support');
+          } else if(d.status==='failed'){
+            clearInterval(_mfPollIv);
+            document.getElementById('mfOverlay').style.display='none';
+            window.location.href='/failed.html?req='+reqId+'&reason=failed';
+          }
+        }catch(_){}
+      },3000);
+    }
+    function closeMfFrame(){
+      if(_mfPollIv) clearInterval(_mfPollIv);
+      document.getElementById('mfOverlay').style.display='none';
+      document.getElementById('mfFrame').src='about:blank';
+    }
+  </script>
+
+  <!-- Overlay Money Fusion plein écran -->
+  <div id="mfOverlay" style="display:none;position:fixed;inset:0;z-index:400;flex-direction:column;background:#0a0f1e">
+    <div style="background:#0e1628;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(240,192,64,0.2);flex-shrink:0">
+      <span style="color:#F0C040;font-weight:700;font-size:.9rem">🔒 Paiement sécurisé — Money Fusion</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:rgba(255,255,255,0.45);font-size:.78rem">Entrez votre numéro sur la page</span>
+        <button onclick="closeMfFrame()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:.8rem">✕ Annuler</button>
+      </div>
+    </div>
+    <iframe id="mfFrame" src="about:blank" style="flex:1;border:none;width:100%" allow="payment *; camera; microphone"></iframe>
+  </div>
+</body>
+</html>

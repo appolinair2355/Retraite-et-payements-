@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soutien au développeur — Sossou Kouamé Shopping Boutique</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .support-hero{
+      background:linear-gradient(135deg,rgba(240,192,64,0.18),rgba(249,115,22,0.12));
+      border:1px solid rgba(240,192,64,0.28);
+      border-radius:20px;padding:26px;margin-bottom:24px;position:relative;overflow:hidden
+    }
+    .support-hero h2{color:#F0C040;margin:0 0 6px;font-size:1.5rem}
+    .support-hero p{color:rgba(255,255,255,0.7);margin:0;font-size:.92rem;line-height:1.5}
+    .tiers-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+    .tier-card{
+      background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
+      border-radius:16px;padding:18px;cursor:pointer;transition:all .2s;
+      display:flex;flex-direction:column;gap:6px;position:relative
+    }
+    .tier-card:hover{border-color:rgba(240,192,64,0.5);transform:translateY(-3px);background:rgba(240,192,64,0.06)}
+    .tier-badge{
+      position:absolute;top:12px;right:12px;font-size:.62rem;font-weight:700;
+      padding:3px 8px;border-radius:100px;letter-spacing:.05em;text-transform:uppercase
+    }
+    .tier-icon{font-size:1.6rem;line-height:1}
+    .tier-label{color:#fff;font-weight:700;font-size:.95rem}
+    .tier-price{color:#F0C040;font-weight:800;font-size:1.15rem;margin-top:auto}
+    .tier-price small{color:rgba(255,255,255,0.4);font-size:.7rem;font-weight:400;margin-left:6px}
+    .tier-cta{
+      margin-top:10px;background:rgba(240,192,64,0.12);color:#F0C040;
+      border:1px solid rgba(240,192,64,0.3);border-radius:8px;padding:8px 10px;
+      font-size:.8rem;font-weight:600;text-align:center
+    }
+    .tier-card:hover .tier-cta{background:rgba(240,192,64,0.2)}
+    @media(max-width:520px){.tiers-grid{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+  <div class="bg-canvas"></div>
+  <div class="grid-overlay"></div>
+  <div class="stars" id="stars"></div>
+
+  <nav class="navbar">
+    <div class="nav-container">
+      <a href="/dashboard.html" class="logo-link">
+        <img src="logo-sk.png" alt="" class="logo-img" onerror="this.style.display='none'">
+        <span class="logo-text">SOSSOU KOUAMÉ SHOPPING BOUTIQUE</span>
+      </a>
+      <div class="nav-right">
+        <a href="/dashboard.html" class="btn-logout" style="text-decoration:none">← Retour</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="page-main" style="position:relative;z-index:1">
+    <div class="container" style="max-width:960px">
+
+      <div class="support-hero anim-fade-up">
+        <h2>💖 Soutenir le développeur</h2>
+        <p>Choisissez un palier ci-dessous pour soutenir le projet. Chaque contribution aide à maintenir et améliorer la plateforme. Merci&nbsp;!</p>
+      </div>
+
+      <div id="tiersLoader" style="text-align:center;padding:40px;color:rgba(255,255,255,0.5)">Chargement des paliers…</div>
+      <div id="tiersGrid" class="tiers-grid anim-fade-up d2" style="display:none"></div>
+    </div>
+  </main>
+
+  <!-- MODAL PAIEMENT -->
+  <div id="payModal" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.75);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:16px">
+    <div style="background:#0e1628;border:1px solid rgba(240,192,64,0.25);border-radius:20px;max-width:440px;width:100%;padding:28px;position:relative;max-height:92vh;overflow-y:auto">
+      <button onclick="closeModal()" style="position:absolute;top:16px;right:16px;background:none;border:none;color:rgba(255,255,255,0.5);font-size:1.4rem;cursor:pointer">✕</button>
+      <div style="font-size:2rem;margin-bottom:6px" id="modalIcon">💖</div>
+      <h3 id="modalTitle" style="color:#F0C040;font-size:1.15rem;margin:0 0 4px;padding-right:24px"></h3>
+      <p style="color:rgba(255,255,255,0.55);font-size:.85rem;margin:0 0 4px">Palier de soutien au développeur</p>
+      <div id="modalPrice" style="color:#10B981;font-weight:700;font-size:1.35rem;margin-bottom:20px"></div>
+
+      <div class="form-section" style="margin-bottom:14px">
+        <label class="form-label">Pays</label>
+        <div class="input-wrapper">
+          <select id="countrySelect" onchange="onCountry()" style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#fff;padding:12px 14px;font-size:.9rem;outline:none">
+            <option value="" disabled selected>Sélectionner un pays</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="netGrp" style="display:none;margin-bottom:14px">
+        <label class="form-label">Réseau</label>
+        <div class="network-chips" id="netChips"></div>
+      </div>
+
+      <div id="phoneGrp" style="display:none;margin-bottom:14px">
+        <label class="form-label">Numéro à débiter</label>
+        <div class="input-wrapper phone-row">
+          <div class="phone-prefix">
+            <span id="flag">🌍</span>
+            <span id="code">+</span>
+          </div>
+          <input type="tel" id="phoneInput" placeholder="Ex: 20 21 12 34" maxlength="15" oninput="chkPay()">
+        </div>
+      </div>
+
+      <div id="payErr" class="btn-pay-error hidden" style="margin-bottom:10px">
+        <span>⚠</span><span id="payErrTxt"></span>
+      </div>
+
+      <button id="btnPay" onclick="doPay()" style="display:none;width:100%" class="btn-primary">
+        <span id="btnPayTxt">💳 Payer maintenant</span>
+        <span class="btn-loader hidden" id="payLoad"></span>
+      </button>
+
+      <!-- ÉCRAN D'ATTENTE USSD -->
+      <div id="waitScreen" class="hidden" style="text-align:center;padding:10px 0">
+        <div style="font-size:3rem;margin-bottom:12px">📱</div>
+        <p style="color:#10B981;font-weight:700;font-size:1rem;margin:0 0 6px">Demande envoyée !</p>
+        <p style="color:rgba(255,255,255,.65);font-size:.85rem;margin:0 0 16px;line-height:1.5">
+          Un message de confirmation va apparaître sur votre téléphone.<br>
+          <strong style="color:#F0C040">Confirmez le paiement sur votre téléphone.</strong>
+        </p>
+        <div class="btn-loader" style="display:inline-block;margin-bottom:14px"></div>
+        <p id="waitStatus" style="color:rgba(255,255,255,.4);font-size:.78rem;margin:0">Vérification en cours…</p>
+        <button onclick="cancelWait()" style="margin-top:14px;background:none;border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.5);border-radius:8px;padding:7px 18px;cursor:pointer;font-size:.78rem">
+          Annuler
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Étoiles
+    (function(){
+      const c=document.getElementById('stars');
+      for(let i=0;i<60;i++){
+        const s=document.createElement('div'); s.className='star';
+        const sz=Math.random()*1.5+.5;
+        s.style.cssText=`width:${sz}px;height:${sz}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--dur:${2+Math.random()*4}s;--delay:${Math.random()*5}s`;
+        c.appendChild(s);
+      }
+    })();
+
+    const COUNTRIES={
+      bj:{name:'Bénin',flag:'🇧🇯',code:'+229',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'moov',n:'Moov',c:'#FF6600'},{k:'celtiis',n:'Celtiis',c:'#00A859'}]},
+      ci:{name:"Côte d'Ivoire",flag:'🇨🇮',code:'+225',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'},{k:'wave',n:'Wave',c:'#1CE5BD'}]},
+      bf:{name:'Burkina Faso',flag:'🇧🇫',code:'+226',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      tg:{name:'Togo',flag:'🇹🇬',code:'+228',nets:[{k:'tmoney',n:'T-Money',c:'#0066CC'},{k:'moov',n:'Moov',c:'#FF6600'}]},
+      sn:{name:'Sénégal',flag:'🇸🇳',code:'+221',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'wave',n:'Wave',c:'#1CE5BD'},{k:'free',n:'Free',c:'#DA291C'}]},
+      ml:{name:'Mali',flag:'🇲🇱',code:'+223',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      gh:{name:'Ghana',flag:'🇬🇭',code:'+233',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'vodafone',n:'Vodafone',c:'#E60000'}]},
+      ng:{name:'Nigeria',flag:'🇳🇬',code:'+234',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'airtel',n:'Airtel',c:'#E60000'}]},
+      cm:{name:'Cameroun',flag:'🇨🇲',code:'+237',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'}]},
+      fr:{name:'France',flag:'🇫🇷',code:'+33',nets:[{k:'orange',n:'Orange',c:'#FF6600'}]},
+    };
+    let selTier=null, selCountry=null, selNet=null;
+
+    function tierIcon(price){
+      if(price>=100000) return '👑';
+      if(price>=50000)  return '🏆';
+      if(price>=25000)  return '💎';
+      if(price>=10000)  return '⭐';
+      if(price>=5000)   return '🥇';
+      if(price>=2000)   return '🥈';
+      if(price>=1000)   return '🥉';
+      return '💖';
+    }
+    function tierBadge(price){
+      if(price>=100000) return {t:'Mythique',c:'#EC4899'};
+      if(price>=50000)  return {t:'Prestige',c:'#8B5CF6'};
+      if(price>=25000)  return {t:'Diamant', c:'#06B6D4'};
+      if(price>=10000)  return {t:'Or+',     c:'#F0C040'};
+      if(price>=5000)   return {t:'Argent+', c:'#94A3B8'};
+      if(price>=1000)   return {t:'Bronze',  c:'#F97316'};
+      return null;
+    }
+
+    async function loadTiers(){
+      try{
+        const r=await fetch('/api/support-tiers');
+        if(r.status===401){ location.href='/'; return; }
+        const d=await r.json();
+        const g=document.getElementById('tiersGrid');
+        g.innerHTML='';
+        (d.tiers||[]).forEach(t=>{
+          const b=tierBadge(t.price_xof);
+          const usd=(t.price_xof/650).toFixed(2);
+          const el=document.createElement('div');
+          el.className='tier-card';
+          el.onclick=()=>openModal(t);
+          el.innerHTML=`
+            ${b?`<div class="tier-badge" style="background:${b.c}22;color:${b.c};border:1px solid ${b.c}44">${b.t}</div>`:''}
+            <div class="tier-icon">${tierIcon(t.price_xof)}</div>
+            <div class="tier-label">${t.label}</div>
+            <div class="tier-price">${t.price_xof.toLocaleString('fr-FR')} FCFA<small>≈ $${usd}</small></div>
+            <div class="tier-cta">💳 Soutenir</div>
+          `;
+          g.appendChild(el);
+        });
+        document.getElementById('tiersLoader').style.display='none';
+        g.style.display='grid';
+      }catch(e){
+        document.getElementById('tiersLoader').textContent='Erreur de chargement.';
+      }
+    }
+
+    function openModal(tier){
+      selTier=tier; selCountry=null; selNet=null;
+      document.getElementById('modalIcon').textContent=tierIcon(tier.price_xof);
+      document.getElementById('modalTitle').textContent=tier.label;
+      document.getElementById('modalPrice').textContent=tier.price_xof.toLocaleString('fr-FR')+' FCFA';
+      const sel=document.getElementById('countrySelect');
+      sel.innerHTML='<option value="" disabled selected>Sélectionner un pays</option>';
+      Object.entries(COUNTRIES).forEach(([k,v])=>{
+        const o=document.createElement('option'); o.value=k; o.textContent=`${v.flag} ${v.name}`; sel.appendChild(o);
+      });
+      ['netGrp','phoneGrp'].forEach(id=>document.getElementById(id).style.display='none');
+      document.getElementById('phoneInput').value='';
+      document.getElementById('btnPay').style.display='none';
+      document.getElementById('payErr').classList.add('hidden');
+      document.getElementById('payModal').style.display='flex';
+    }
+    function closeModal(){ document.getElementById('payModal').style.display='none'; selTier=null; }
+
+    function onCountry(){
+      const k=document.getElementById('countrySelect').value;
+      selCountry=COUNTRIES[k]; selNet=null;
+      if(!selCountry) return;
+      document.getElementById('flag').textContent=selCountry.flag;
+      document.getElementById('code').textContent=selCountry.code;
+      const box=document.getElementById('netChips'); box.innerHTML='';
+      selCountry.nets.forEach(net=>{
+        const d=document.createElement('div'); d.className='network-chip';
+        d.innerHTML=`<span class="net-dot" style="background:${net.c}"></span>${net.n}`;
+        d.onclick=()=>{ selNet=net; document.querySelectorAll('#netChips .network-chip').forEach(c=>c.classList.remove('selected')); d.classList.add('selected'); chkPay(); };
+        box.appendChild(d);
+      });
+      document.getElementById('netGrp').style.display='block';
+      document.getElementById('phoneGrp').style.display='block';
+      chkPay();
+    }
+    function chkPay(){
+      const phone=(document.getElementById('phoneInput').value||'').trim();
+      const ok=selNet && selCountry && phone.length>=8;
+      document.getElementById('btnPay').style.display=ok?'flex':'none';
+    }
+
+    let pollInterval = null;
+    function showWaitScreen(payReqId, type) {
+      document.getElementById('btnPay').style.display='none';
+      document.getElementById('payErr').classList.add('hidden');
+      document.getElementById('netGrp').style.display='none';
+      document.getElementById('phoneGrp').style.display='none';
+      document.getElementById('countrySelect').closest('div').style.display='none';
+      document.getElementById('waitScreen').classList.remove('hidden');
+      let attempts = 0;
+      pollInterval = setInterval(async () => {
+        attempts++;
+        const st = document.getElementById('waitStatus');
+        if(st) st.textContent = `Vérification en cours… (${attempts})`;
+        try {
+          const r = await fetch(`/api/poll-payment/${payReqId}`);
+          const d = await r.json();
+          if (d.status === 'paid') {
+            clearInterval(pollInterval);
+            window.location.href = `/success.html?req=${payReqId}&type=${type}`;
+          } else if (d.status === 'failed') {
+            clearInterval(pollInterval);
+            if(st) st.textContent = '❌ Paiement échoué ou annulé. Réessayez.';
+          } else if (attempts >= 60) {
+            clearInterval(pollInterval);
+            if(st) st.textContent = '⏱ Délai dépassé. Vérifiez votre téléphone ou réessayez.';
+          }
+        } catch(e) {}
+      }, 5000);
+    }
+    function cancelWait() { clearInterval(pollInterval); closeModal(); }
+
+    async function doPay(){
+      if(!selTier) return;
+      const btn=document.getElementById('btnPay');
+      const txt=document.getElementById('btnPayTxt');
+      const ld =document.getElementById('payLoad');
+      const err=document.getElementById('payErr');
+      const etx=document.getElementById('payErrTxt');
+      btn.disabled=true; txt.textContent='Envoi en cours…'; ld.classList.remove('hidden');
+      err.classList.add('hidden');
+      const rawPhone=document.getElementById('phoneInput').value.trim().replace(/\s/g,'');
+      const numeroSend = rawPhone;
+      try{
+        const r=await fetch('/api/create-support',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ tier_id:selTier.id, numeroSend })
+        });
+        const d=await r.json();
+        if(!d.payment_req_id){
+          etx.textContent=d.error||d.message||'Erreur lors du paiement';
+          err.classList.remove('hidden');
+          btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+          return;
+        }
+        showWaitScreen(d.payment_req_id, 'support');
+      }catch{
+        etx.textContent='Erreur réseau. Réessayez.';
+        err.classList.remove('hidden');
+        btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+      }
+    }
+
+    loadTiers();
+  </script>
+</body>
+</html>

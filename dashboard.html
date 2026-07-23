@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mon Espace — Sossou Kouamé Shopping Boutique</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="bg-canvas"></div>
+  <div class="grid-overlay"></div>
+  <div class="stars" id="stars"></div>
+
+  <nav class="navbar">
+    <div class="nav-container">
+      <a href="/dashboard.html" class="logo-link">
+        <img src="logo-sk.png" alt="" class="logo-img" onerror="this.style.display='none'">
+        <span class="logo-text">SOSSOU KOUAMÉ SHOPPING BOUTIQUE</span>
+      </a>
+      <div class="nav-right">
+        <span class="nav-username" id="navUser">—</span>
+        <button class="btn-logout" onclick="logout()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          Déconnexion
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="page-main" style="position:relative;z-index:1;">
+    <div class="container" style="max-width:860px">
+
+      <div id="dashLoader" class="dash-loader">
+        <div class="spinner"></div>
+        <p>Chargement de votre espace…</p>
+      </div>
+
+      <div id="dashContent" class="hidden">
+
+        <!-- Subscription hero -->
+        <div class="sub-hero anim-fade-up">
+          <!-- Déco coins -->
+          <div style="position:absolute;top:20px;left:24px;opacity:.06;font-size:5rem;pointer-events:none;user-select:none;line-height:1">💎</div>
+          <div style="position:absolute;bottom:16px;right:100px;opacity:.05;font-size:4rem;pointer-events:none;user-select:none;line-height:1">✦</div>
+
+          <div class="sub-hero-top">
+            <div class="sub-hero-name">
+              <h2 id="greetName">Bonjour !</h2>
+              <p id="accountType">—</p>
+            </div>
+            <div class="status-pill" id="statusPill">
+              <span class="status-dot" id="statusDot"></span>
+              <span id="statusTxt">—</span>
+            </div>
+          </div>
+
+          <!-- Timer actif -->
+          <div id="timerBlock" class="timer-block" style="display:none">
+            <div class="timer-label">⏱ Temps d'abonnement restant</div>
+            <div class="timer-digits" id="timerDigits">
+              <!-- Rempli par JS -->
+            </div>
+            <div class="timer-expires" id="expiresAt"></div>
+          </div>
+
+          <!-- Expiré -->
+          <div id="expiredBlock" class="sub-expired-block" style="display:none">
+            <div class="expired-icon">⚠️</div>
+            <h3>Abonnement inactif</h3>
+            <p>Renouvelez pour accéder à nos services.</p>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="anim-fade-up d2">
+          <div class="section-label">Que souhaitez-vous faire ?</div>
+          <div class="action-grid">
+
+            <a href="https://paiement-s-curis.onrender.com" target="_blank" class="action-card">
+              <div class="ac-icon gold">🔄</div>
+              <div class="ac-text">
+                <h4>Renouveler</h4>
+                <p>Prolonger mon abonnement</p>
+              </div>
+              <svg class="ac-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </a>
+
+            <a href="https://paiement-s-curis.onrender.com" target="_blank" class="action-card">
+              <div class="ac-icon blue">💳</div>
+              <div class="ac-text">
+                <h4>Souscrire</h4>
+                <p>Acheter un nouvel abonnement</p>
+              </div>
+              <svg class="ac-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </a>
+
+            <a href="/support.html" class="action-card">
+              <div class="ac-icon" style="background:linear-gradient(135deg,#F0C040,#F97316);color:#fff">💖</div>
+              <div class="ac-text">
+                <h4>Soutien au développeur</h4>
+                <p>Choisir un palier de soutien</p>
+              </div>
+              <svg class="ac-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </a>
+
+            <a href="/admin.html" id="adminLink" class="action-card" style="display:none">
+              <div class="ac-icon" style="background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff">🛡️</div>
+              <div class="ac-text">
+                <h4>Panneau administrateur</h4>
+                <p>Voir tous les paiements</p>
+              </div>
+              <svg class="ac-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </a>
+
+          </div>
+        </div>
+
+        <!-- Boutique -->
+        <div class="anim-fade-up d3" style="margin-top:32px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+            <div class="section-label" style="margin-bottom:0">🛍️ Boutique — Stratégies & Idées</div>
+            <div style="display:flex;gap:6px">
+              <button class="scurr-btn active" id="scbtn_xof" onclick="setShopCurr('xof')">🪙 XOF</button>
+              <button class="scurr-btn" id="scbtn_usd" onclick="setShopCurr('usd')">$ USD</button>
+              <button class="scurr-btn" id="scbtn_eur" onclick="setShopCurr('eur')">€ EUR</button>
+            </div>
+          </div>
+          <div id="shopLoader" style="text-align:center;padding:24px;color:rgba(255,255,255,0.4);font-size:.9rem">Chargement de la boutique…</div>
+          <div id="shopGrid" class="shop-grid" style="display:none"></div>
+          <div id="shopEmpty" style="display:none;text-align:center;padding:24px;color:rgba(255,255,255,0.4);font-size:.9rem">Aucun produit disponible pour le moment.</div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- ─── MODAL PAIEMENT BOUTIQUE ─────────────────────────────────────── -->
+  <div id="shopModal" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:16px">
+    <div style="background:#0e1628;border:1px solid rgba(240,192,64,0.2);border-radius:20px;max-width:440px;width:100%;padding:28px;position:relative;max-height:90vh;overflow-y:auto">
+      <button onclick="closeShopModal()" style="position:absolute;top:16px;right:16px;background:none;border:none;color:rgba(255,255,255,0.5);font-size:1.4rem;cursor:pointer;line-height:1">✕</button>
+      <h3 id="modalTitle" style="color:#F0C040;font-size:1.1rem;margin:0 0 4px;padding-right:24px"></h3>
+      <p id="modalDesc" style="color:rgba(255,255,255,0.55);font-size:.85rem;margin:0 0 20px"></p>
+      <div id="modalPrice" style="color:#10B981;font-weight:700;font-size:1rem;margin-bottom:20px"></div>
+
+      <!-- Pays -->
+      <div class="form-section" style="margin-bottom:14px">
+        <label class="form-label">Pays</label>
+        <div class="input-wrapper">
+          <select id="mCountrySelect" onchange="onModalCountry()" style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#fff;padding:12px 14px;font-size:.9rem;outline:none">
+            <option value="" disabled selected>Sélectionner un pays</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Réseau -->
+      <div id="mNetGrp" style="display:none;margin-bottom:14px">
+        <label class="form-label">Réseau</label>
+        <div class="network-chips" id="mNetChips"></div>
+      </div>
+
+      <!-- Téléphone -->
+      <div id="mPhoneGrp" style="display:none;margin-bottom:14px">
+        <label class="form-label">Numéro à débiter</label>
+        <div class="input-wrapper phone-row">
+          <div class="phone-prefix" id="mPhonePrefix">
+            <span id="mFlag">🌍</span>
+            <span id="mCode">+</span>
+          </div>
+          <input type="tel" id="mPhoneInput" placeholder="Ex: 20 21 12 34" maxlength="15" oninput="chkShopPay()">
+        </div>
+      </div>
+
+      <div id="mPayErr" class="btn-pay-error hidden" style="margin-bottom:10px">
+        <span>⚠</span><span id="mPayErrTxt"></span>
+      </div>
+
+      <button id="btnShopPay" onclick="doShopPay()" style="display:none;width:100%" class="btn-primary">
+        <span id="btnShopTxt">💳 Payer maintenant</span>
+        <span class="btn-loader hidden" id="shopLoad"></span>
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // Étoiles
+    (function(){
+      const c=document.getElementById('stars');
+      for(let i=0;i<60;i++){
+        const s=document.createElement('div'); s.className='star';
+        const sz=Math.random()*1.5+.5;
+        s.style.cssText=`width:${sz}px;height:${sz}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--dur:${2+Math.random()*4}s;--delay:${Math.random()*5}s`;
+        c.appendChild(s);
+      }
+    })();
+
+    let timerIv=null, user=null;
+
+    async function load(){
+      try {
+        const r=await fetch('/api/me',{cache:'no-store'});
+        if(r.status===401){ window.location.href='/'; return; }
+        user=await r.json();
+        render(user);
+        document.getElementById('dashLoader').style.display='none';
+        document.getElementById('dashContent').classList.remove('hidden');
+      } catch { window.location.href='/'; }
+    }
+
+    // Si la page revient depuis le cache "retour arrière" (bfcache) après
+    // une déconnexion, on revérifie immédiatement la session.
+    window.addEventListener('pageshow', (e)=>{ if(e.persisted) load(); });
+
+    function render(u){
+      document.getElementById('navUser').textContent = u.username;
+      document.getElementById('greetName').textContent =
+        `Bonjour, ${u.first_name || u.username} 👋`;
+      document.getElementById('accountType').textContent =
+        u.is_pro ? '✦ Compte Pro' : u.is_premium ? '✦ Compte Premium' : '✦ Compte Standard';
+      if (u.is_admin) { const al=document.getElementById('adminLink'); if(al) al.style.display='flex'; }
+
+      const pill=document.getElementById('statusPill');
+      const dot =document.getElementById('statusDot');
+      const txt =document.getElementById('statusTxt');
+      if(u.is_active){
+        pill.className='status-pill active';
+        dot.className='status-dot active';
+        txt.textContent='Actif';
+        document.getElementById('timerBlock').style.display='block';
+        document.getElementById('expiredBlock').style.display='none';
+
+        const exp=new Date(u.subscription_expires_at);
+        document.getElementById('expiresAt').textContent=
+          `Expire le ${exp.toLocaleDateString('fr-FR',{day:'2-digit',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'})}`;
+
+        startTimer(u.remaining_ms);
+      } else {
+        pill.className='status-pill inactive';
+        dot.className='status-dot inactive';
+        txt.textContent='Inactif';
+        document.getElementById('timerBlock').style.display='none';
+        document.getElementById('expiredBlock').style.display='flex';
+      }
+    }
+
+    function startTimer(ms){
+      if(timerIv) clearInterval(timerIv);
+      let rem=ms;
+      function draw(){
+        const s=Math.max(0,Math.floor(rem/1000));
+        const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600),
+              m=Math.floor((s%3600)/60), sec=s%60;
+        let html='';
+        if(d>0) html+=unit(d,'Jours')+'<span class="timer-sep">·</span>';
+        html+=unit(h,'Heures')+'<span class="timer-sep">:</span>'+
+              unit(m,'Min')+'<span class="timer-sep">:</span>'+
+              unit(sec,'Sec');
+        document.getElementById('timerDigits').innerHTML=html;
+        if(rem<=0) clearInterval(timerIv);
+        rem-=1000;
+      }
+      draw();
+      timerIv=setInterval(draw,1000);
+    }
+    function unit(n,l){
+      return `<div class="timer-unit"><span class="timer-num">${String(n).padStart(2,'0')}</span><span class="timer-unit-label">${l}</span></div>`;
+    }
+
+    async function logout(){
+      try{ await fetch('/api/logout',{method:'POST'}); } finally { location.replace('/'); }
+    }
+
+    // ─── BOUTIQUE ──────────────────────────────────────────────────────
+    const COUNTRIES_MODAL={
+      bj:{name:'Bénin',flag:'🇧🇯',code:'+229',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'moov',n:'Moov',c:'#FF6600'},{k:'celtiis',n:'Celtiis',c:'#00A859'}]},
+      ci:{name:"Côte d'Ivoire",flag:'🇨🇮',code:'+225',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'},{k:'wave',n:'Wave',c:'#1CE5BD'}]},
+      bf:{name:'Burkina Faso',flag:'🇧🇫',code:'+226',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      tg:{name:'Togo',flag:'🇹🇬',code:'+228',nets:[{k:'tmoney',n:'T-Money',c:'#0066CC'},{k:'moov',n:'Moov',c:'#FF6600'}]},
+      sn:{name:'Sénégal',flag:'🇸🇳',code:'+221',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'wave',n:'Wave',c:'#1CE5BD'},{k:'free',n:'Free',c:'#DA291C'}]},
+      ml:{name:'Mali',flag:'🇲🇱',code:'+223',nets:[{k:'orange',n:'Orange',c:'#FF6600'},{k:'moov',n:'Moov',c:'#0066CC'}]},
+      gh:{name:'Ghana',flag:'🇬🇭',code:'+233',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'vodafone',n:'Vodafone',c:'#E60000'}]},
+      ng:{name:'Nigeria',flag:'🇳🇬',code:'+234',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'airtel',n:'Airtel',c:'#E60000'}]},
+      cm:{name:'Cameroun',flag:'🇨🇲',code:'+237',nets:[{k:'mtn',n:'MTN',c:'#FFCC00'},{k:'orange',n:'Orange',c:'#FF6600'}]},
+      fr:{name:'France',flag:'🇫🇷',code:'+33',nets:[{k:'orange',n:'Orange',c:'#FF6600'}]},
+    };
+    let shopItems=[], selItem=null, mSelCountry=null, mSelNet=null;
+    let mfPollIv=null;
+    let shopRates = { usd_to_xof:656, usd_to_eur:0.93, btc_usd:60000, eth_usd:3000 };
+    let shopCurr = 'xof';
+
+    // ─── Devise boutique ──────────────────────────────────────────────
+    function setShopCurr(c){
+      shopCurr=c;
+      ['xof','usd','eur'].forEach(k=>{
+        const b=document.getElementById('scbtn_'+k);
+        if(b) b.classList.toggle('active', k===c);
+      });
+      if(shopItems.length) renderShop(shopItems);
+    }
+    function fmtPrice(pxof){
+      const usd = pxof / shopRates.usd_to_xof;
+      if(shopCurr==='xof') return `${pxof.toLocaleString('fr-FR')} XOF`;
+      if(shopCurr==='usd') return `${usd.toFixed(2)}`;
+      if(shopCurr==='eur') return `€${(usd * shopRates.usd_to_eur).toFixed(2)}`;
+      return `${pxof.toLocaleString('fr-FR')} XOF`;
+    }
+
+    // ─── Chargement boutique ─────────────────────────────────────────
+    async function loadShop(){
+      try {
+        // Fetch rates + items in parallel
+        const [ratesRes, shopRes] = await Promise.all([
+          fetch('/api/rates'),
+          fetch('/api/shop'),
+        ]);
+        if(ratesRes.ok) shopRates = await ratesRes.json();
+        if(!shopRes.ok){ document.getElementById('shopLoader').style.display='none'; document.getElementById('shopEmpty').style.display='block'; return; }
+        const d=await shopRes.json();
+        shopItems=d.items||[];
+        document.getElementById('shopLoader').style.display='none';
+        if(shopItems.length===0){ document.getElementById('shopEmpty').style.display='block'; return; }
+        renderShop(shopItems);
+        document.getElementById('shopGrid').style.display='grid';
+      } catch { document.getElementById('shopLoader').style.display='none'; document.getElementById('shopEmpty').style.display='block'; }
+    }
+
+    function renderShop(items){
+      const g=document.getElementById('shopGrid'); g.innerHTML='';
+      // Group by category
+      const strategies=items.filter(i=>i.category==='strategy');
+      const ideas=items.filter(i=>i.category==='idea');
+      if(strategies.length){
+        g.insertAdjacentHTML('beforeend','<div style="grid-column:1/-1;font-size:.75rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#F0C040;margin-bottom:4px;margin-top:8px">📈 Stratégies</div>');
+        strategies.forEach(item=>g.appendChild(makeCard(item)));
+      }
+      if(ideas.length){
+        g.insertAdjacentHTML('beforeend','<div style="grid-column:1/-1;font-size:.75rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:rgba(99,102,241,0.9);margin-bottom:4px;margin-top:16px">💡 Idées de stratégie</div>');
+        ideas.forEach(item=>g.appendChild(makeCard(item)));
+      }
+    }
+
+    function makeCard(item){
+      const pxof=item.price_xof||(Math.round((item.price_usd||0)*shopRates.usd_to_xof));
+      const free=!item.is_paid;
+      const isStrat=item.category==='strategy';
+      const d=document.createElement('div'); d.className='shop-card';
+      const safeItem=encodeURIComponent(JSON.stringify(item));
+      const usd = pxof / shopRates.usd_to_xof;
+      const subPrice = shopCurr==='xof'
+        ? `≈ ${usd.toFixed(2)} · €${(usd*shopRates.usd_to_eur).toFixed(2)}`
+        : shopCurr==='usd'
+          ? `≈ ${pxof.toLocaleString('fr-FR')} XOF`
+          : `≈ ${pxof.toLocaleString('fr-FR')} XOF`;
+      d.innerHTML=`
+        <div class="shop-card-icon">${isStrat?'📈':'💡'}</div>
+        <div class="shop-card-name">${item.name}</div>
+        <div class="shop-card-desc">${item.description||''}</div>
+        <div class="shop-card-price">${free
+          ? '<span style="color:#10B981">Gratuit</span>'
+          : `<span>${fmtPrice(pxof)}</span><span style="font-size:.72rem;opacity:.5;margin-left:6px">${subPrice}</span>`
+        }</div>
+        <button class="shop-buy-btn" onclick="openShopModal(decodeURIComponent('${safeItem}'))">${free?'Voir':'Acheter'}</button>
+      `;
+      return d;
+    }
+
+    function openShopModal(itemStr){
+      let item; try { item=JSON.parse(itemStr); } catch { return; }
+      selItem=item; mSelCountry=null; mSelNet=null;
+      document.getElementById('modalTitle').textContent=item.name;
+      document.getElementById('modalDesc').textContent=item.description||'';
+      const pxof=item.price_xof||(Math.round((item.price_usd||0)*650));
+      document.getElementById('modalPrice').textContent=item.is_paid
+        ? `${pxof.toLocaleString('fr-FR')} XOF`
+        : 'Gratuit';
+      // Populate country select
+      const sel=document.getElementById('mCountrySelect');
+      sel.innerHTML='<option value="" disabled selected>Sélectionner un pays</option>';
+      Object.entries(COUNTRIES_MODAL).forEach(([k,v])=>{
+        const o=document.createElement('option'); o.value=k; o.textContent=`${v.flag} ${v.name}`; sel.appendChild(o);
+      });
+      ['mNetGrp','mPhoneGrp'].forEach(id=>document.getElementById(id).style.display='none');
+      document.getElementById('mPhoneInput').value='';
+      document.getElementById('btnShopPay').style.display='none';
+      document.getElementById('mPayErr').classList.add('hidden');
+      document.getElementById('shopModal').style.display='flex';
+    }
+    function closeShopModal(){ document.getElementById('shopModal').style.display='none'; selItem=null; }
+
+    function onModalCountry(){
+      const k=document.getElementById('mCountrySelect').value;
+      mSelCountry=COUNTRIES_MODAL[k]; mSelNet=null;
+      if(!mSelCountry) return;
+      document.getElementById('mFlag').textContent=mSelCountry.flag;
+      document.getElementById('mCode').textContent=mSelCountry.code;
+      const box=document.getElementById('mNetChips'); box.innerHTML='';
+      mSelCountry.nets.forEach(net=>{
+        const d=document.createElement('div'); d.className='network-chip';
+        d.innerHTML=`<span class="net-dot" style="background:${net.c}"></span>${net.n}`;
+        d.onclick=()=>{ mSelNet=net; document.querySelectorAll('#mNetChips .network-chip').forEach(c=>c.classList.remove('selected')); d.classList.add('selected'); chkShopPay(); };
+        box.appendChild(d);
+      });
+      document.getElementById('mNetGrp').style.display='block';
+      document.getElementById('mPhoneGrp').style.display='block';
+      chkShopPay();
+    }
+    function chkShopPay(){
+      const phone=(document.getElementById('mPhoneInput').value||'').trim();
+      const ok=mSelNet && mSelCountry && phone.length>=8;
+      document.getElementById('btnShopPay').style.display=ok?'flex':'none';
+    }
+
+    async function doShopPay(){
+      if(!selItem) return;
+      const btn=document.getElementById('btnShopPay');
+      const txt=document.getElementById('btnShopTxt');
+      const ld =document.getElementById('shopLoad');
+      const err=document.getElementById('mPayErr');
+      const etx=document.getElementById('mPayErrTxt');
+      btn.disabled=true; txt.textContent='Ouverture…'; ld.classList.remove('hidden');
+      err.classList.add('hidden');
+      const phone=document.getElementById('mPhoneInput').value.trim().replace(/\s/g,'');
+      const pxof=selItem.price_xof||(Math.round((selItem.price_usd||0)*650));
+      try {
+        const r=await fetch('/api/buy-item',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            item_id:    selItem.id,
+            item_name:  selItem.name,
+            price_xof:  pxof,
+            numeroSend: mSelCountry.code+phone
+          })
+        });
+        const d=await r.json();
+        if(d.url){ window.location.href=d.url; return; }
+        if(d.statut===true||d.success===true){
+          closeShopModal();
+          window.location.href=`/success.html?req=${d.payment_req_id}&method=mobile&type=item`;
+        } else {
+          etx.textContent=d.message||d.error||'Erreur lors du paiement';
+          err.classList.remove('hidden');
+          btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+        }
+      } catch {
+        etx.textContent='Erreur réseau. Réessayez.';
+        err.classList.remove('hidden');
+        btn.disabled=false; txt.textContent='💳 Payer maintenant'; ld.classList.add('hidden');
+      }
+    }
+
+    // ─── Overlay iframe Money Fusion ──────────────────────────────────
+    function openMfFrame(url, reqId, type){
+      if(mfPollIv) clearInterval(mfPollIv);
+      document.getElementById('mfFrame').src=url;
+      document.getElementById('mfOverlay').style.display='flex';
+      document.getElementById('mfStatus').textContent='En attente de confirmation…';
+      mfPollIv=setInterval(async()=>{
+        try {
+          const r=await fetch('/api/payment-check/'+reqId);
+          const d=await r.json();
+          document.getElementById('mfStatus').textContent='Vérification en cours…';
+          if(d.status==='validated'){
+            clearInterval(mfPollIv);
+            document.getElementById('mfOverlay').style.display='none';
+            window.location.href='/success.html?req='+reqId+'&method=mobile&type='+type;
+          }
+        } catch(_){}
+      },3000);
+    }
+    function closeMfFrame(){
+      if(mfPollIv) clearInterval(mfPollIv);
+      document.getElementById('mfOverlay').style.display='none';
+      document.getElementById('mfFrame').src='about:blank';
+    }
+
+    load();
+    loadShop();
+  </script>
+
+  <!-- ─── OVERLAY IFRAME MONEY FUSION ───────────────────────────────── -->
+  <div id="mfOverlay" style="display:none;position:fixed;inset:0;z-index:400;flex-direction:column;background:#0a0f1e">
+    <div style="background:#0e1628;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(240,192,64,0.2);flex-shrink:0">
+      <span style="color:#F0C040;font-weight:700;font-size:.9rem">🔒 Paiement sécurisé</span>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="mfStatus" style="color:rgba(255,255,255,0.45);font-size:.8rem">En attente…</span>
+        <button onclick="closeMfFrame()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:.8rem">✕ Annuler</button>
+      </div>
+    </div>
+    <iframe id="mfFrame" src="about:blank" style="flex:1;border:none;width:100%" allow="payment *; camera; microphone"></iframe>
+  </div>
+
+  <style>
+    .shop-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; }
+    .shop-card{ background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:18px; display:flex; flex-direction:column; gap:8px; transition:border-color .2s,transform .2s; }
+    .shop-card:hover{ border-color:rgba(240,192,64,0.35); transform:translateY(-2px); }
+    .shop-card-icon{ font-size:1.6rem; }
+    .shop-card-name{ font-weight:700; color:#fff; font-size:.92rem; }
+    .shop-card-desc{ color:rgba(255,255,255,0.5); font-size:.78rem; line-height:1.5; flex:1; }
+    .shop-card-price{ color:#F0C040; font-weight:700; font-size:.9rem; }
+    .shop-buy-btn{ margin-top:6px; background:linear-gradient(135deg,#F0C040,#C9A030); color:#000; border:none; border-radius:10px; padding:10px 14px; font-weight:700; font-size:.85rem; cursor:pointer; transition:opacity .2s; }
+    .shop-buy-btn:hover{ opacity:.85; }
+    .section-label{ font-size:.75rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:rgba(255,255,255,0.4); margin-bottom:14px; }
+    .scurr-btn{ background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:rgba(255,255,255,0.55); border-radius:8px; padding:5px 13px; cursor:pointer; font-size:.78rem; font-weight:600; transition:.2s; font-family:inherit; }
+    .scurr-btn.active{ background:rgba(240,192,64,0.15); border-color:#F0C040; color:#F0C040; }
+    .scurr-btn:hover{ border-color:rgba(240,192,64,0.4); color:#F0C040; }
+  </style>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirmation — Sossou Kouamé Shopping Boutique</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="bg-canvas"></div>
+  <div class="grid-overlay"></div>
+  <div class="stars" id="stars"></div>
+  <canvas id="confetti" style="position:fixed;inset:0;pointer-events:none;z-index:50;"></canvas>
+
+  <nav class="navbar">
+    <div class="nav-container">
+      <a href="/dashboard.html" class="logo-link">
+        <img src="logo-sk.png" alt="" class="logo-img" onerror="this.style.display='none'">
+        <span class="logo-text">SOSSOU KOUAMÉ SHOPPING BOUTIQUE</span>
+      </a>
+    </div>
+  </nav>
+
+  <main class="page-main" style="position:relative;z-index:1;display:flex;align-items:center;">
+    <div class="container" style="max-width:560px">
+
+      <!-- Loader -->
+      <div id="ld" class="dash-loader">
+        <div class="spinner"></div>
+        <p>Vérification du paiement en cours…</p>
+      </div>
+
+      <!-- Succès abonnement -->
+      <div id="suc" class="result-card success-card hidden">
+        <div class="result-icon-wrap success">🎉</div>
+        <h2>Paiement confirmé !</h2>
+        <p class="result-sub" id="sucSub"></p>
+        <div class="result-details" id="sucDetails"></div>
+        <a href="/dashboard.html" class="btn-primary" style="text-decoration:none">
+          Voir mon abonnement →
+        </a>
+      </div>
+
+      <!-- Succès achat stratégie -->
+      <div id="sucIdea" class="result-card success-card hidden">
+        <div class="result-icon-wrap success">🎉</div>
+        <h2>Achat confirmé !</h2>
+        <p class="result-sub" id="sucIdeaSub"></p>
+        <div class="result-details" style="margin:16px 0">
+          <div class="result-row"><span>Statut</span><strong class="ok">✓ Validé</strong></div>
+          <div class="result-row" style="margin-top:10px"><span style="color:rgba(255,255,255,0.7);font-size:.88rem;line-height:1.6">Retournez sur le site principal pour télécharger votre stratégie. Votre achat a été enregistré et sera disponible dans votre espace.</span></div>
+        </div>
+        <a href="/dashboard.html" class="btn-primary" style="text-decoration:none;margin-bottom:10px">
+          Tableau de bord →
+        </a>
+      </div>
+
+      <!-- Succès soutien -->
+      <div id="sucSup" class="result-card success-card hidden">
+        <div class="result-icon-wrap success">💖</div>
+        <h2>Merci pour votre soutien !</h2>
+        <p class="result-sub" id="sucSupSub"></p>
+        <div class="result-details" id="sucSupDetails" style="margin:16px 0"></div>
+        <a href="/dashboard.html" class="btn-primary" style="text-decoration:none">
+          Retour au tableau de bord →
+        </a>
+      </div>
+
+      <!-- En attente -->
+      <div id="pen" class="result-card pending-card hidden">
+        <div class="result-icon-wrap pending">⏳</div>
+        <h2>En cours de validation</h2>
+        <p class="result-sub" id="penSub"></p>
+        <div class="pending-steps">
+          <div class="pending-step">
+            <div class="ps-num">1</div>
+            <div class="ps-text">Votre paiement crypto a bien été enregistré.</div>
+          </div>
+          <div class="pending-step">
+            <div class="ps-num">2</div>
+            <div class="ps-text">Notre équipe va <strong>vérifier votre transaction</strong> sur la blockchain.</div>
+          </div>
+          <div class="pending-step">
+            <div class="ps-num">3</div>
+            <div class="ps-text">Votre abonnement sera activé dans les <strong>24 à 48 heures</strong>.</div>
+          </div>
+        </div>
+        <a href="/dashboard.html" class="btn-primary" style="text-decoration:none">
+          Retour au dashboard
+        </a>
+      </div>
+
+      <!-- Erreur / Timeout -->
+      <div id="err" class="result-card error-card hidden" style="text-align:center">
+        <div class="result-icon-wrap error" style="font-size:2.5rem">⏱</div>
+        <h2 style="color:#EF4444;margin:0 0 8px">Paiement non confirmé</h2>
+        <p class="result-sub" style="margin-bottom:4px">Votre paiement n'a pas été validé dans les 60 secondes imparties.</p>
+        <div class="result-details" id="errDetails" style="margin:16px 0;text-align:left"></div>
+        <p style="margin:0 0 16px;font-size:.83rem;color:rgba(255,255,255,.4)">
+          Si vous avez bien confirmé sur votre téléphone, contactez le support.
+        </p>
+        <div style="margin-bottom:18px;padding:10px 16px;background:rgba(240,192,64,.08);border:1px solid rgba(240,192,64,.2);border-radius:10px">
+          <span style="color:rgba(255,255,255,.5);font-size:.83rem">Retour automatique à l'accueil dans </span>
+          <strong id="errSec" style="color:#F0C040;font-size:1rem">5</strong>
+          <span style="color:rgba(255,255,255,.5);font-size:.83rem"> secondes…</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <a href="/" class="btn-primary" style="text-decoration:none;text-align:center">← Retour à l'accueil maintenant</a>
+          <a href="/payment.html" style="color:rgba(255,255,255,.4);font-size:.82rem;text-decoration:none">🔄 Réessayer le paiement</a>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script>
+    // Étoiles
+    (function(){
+      const c=document.getElementById('stars');
+      for(let i=0;i<50;i++){
+        const s=document.createElement('div');s.className='star';
+        const sz=Math.random()*1.5+.5;
+        s.style.cssText=`width:${sz}px;height:${sz}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--dur:${2+Math.random()*4}s;--delay:${Math.random()*5}s`;
+        c.appendChild(s);
+      }
+    })();
+
+    // Confetti
+    function launchConfetti(){
+      const cv=document.getElementById('confetti');
+      cv.width=innerWidth; cv.height=innerHeight;
+      const ctx=cv.getContext('2d');
+      const pieces=[];
+      const colors=['#F0C040','#FFD966','#10B981','#6EE7B7','#F0C040','#fff','#C9A030'];
+      for(let i=0;i<120;i++){
+        pieces.push({
+          x:Math.random()*cv.width, y:-20,
+          w:6+Math.random()*8, h:10+Math.random()*10,
+          color:colors[Math.floor(Math.random()*colors.length)],
+          rot:Math.random()*360, rotS:(Math.random()-.5)*8,
+          vx:(Math.random()-.5)*4, vy:2+Math.random()*4,
+          alpha:1
+        });
+      }
+      let frame=0;
+      function draw(){
+        ctx.clearRect(0,0,cv.width,cv.height);
+        pieces.forEach(p=>{
+          p.x+=p.vx; p.y+=p.vy; p.rot+=p.rotS;
+          if(frame>80) p.alpha-=.012;
+          ctx.save(); ctx.globalAlpha=Math.max(0,p.alpha);
+          ctx.translate(p.x,p.y); ctx.rotate(p.rot*Math.PI/180);
+          ctx.fillStyle=p.color;
+          ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+          ctx.restore();
+        });
+        frame++;
+        if(frame<160) requestAnimationFrame(draw);
+        else ctx.clearRect(0,0,cv.width,cv.height);
+      }
+      draw();
+    }
+
+    const params=new URLSearchParams(location.search);
+    const reqId=params.get('req');
+    const method=params.get('method');
+    const itemType=params.get('type'); // 'idea' or null
+    let retries=0;
+    let timeoutNotified=false;
+
+    async function notifyFailureAndShow(d){
+      if(timeoutNotified) return;
+      timeoutNotified=true;
+      try {
+        await fetch('/api/notify-timeout',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ payment_req_id: reqId, context: 'Paiement non confirmé après 60 secondes' })
+        });
+      } catch(e){ console.warn('[notify-timeout]', e); }
+      showErr(d);
+    }
+
+    async function check(){
+      if(!reqId){ showErr(null); return; }
+
+      // Crypto : utilise l'endpoint authentifié (l'utilisateur est toujours connecté)
+      if(method==='crypto'){
+        try{
+          const me=await fetch('/api/me');
+          if(me.status===401){ location.href='/dashboard.html'; return; }
+          const r=await fetch(`/api/payment-check/${reqId}`);
+          if(!r.ok){ showErr(null); return; }
+          const d=await r.json();
+          document.getElementById('ld').style.display='none';
+          if(d.status==='validated') showSuccess(d); else showPending(d);
+        } catch { showErr(null); }
+        return;
+      }
+
+      // Mobile Money (connecté ou invité) : endpoint public, lance le compteur 60s
+      try {
+        const r=await fetch(`/api/poll-payment/${reqId}`);
+        if(!r.ok){ showErr(null); return; }
+        const d=await r.json();
+        if(d.status==='paid'){ document.getElementById('ld').style.display='none'; showSuccess(d); }
+        else if(d.status==='failed'){ notifyFailureAndShow(d); }
+        else retry(d);
+      } catch { retry(null); }
+    }
+
+    function retry(d){
+      // 15 tentatives × 4 s = 60 secondes avant d'abandonner
+      if(retries>=15){ notifyFailureAndShow(d); return; }
+      retries++;
+      setTimeout(async()=>{
+        try {
+          const r=await fetch(`/api/poll-payment/${reqId}`);
+          const nd=await r.json();
+          if(nd.status==='paid'){ document.getElementById('ld').style.display='none'; showSuccess(nd); }
+          else if(nd.status==='failed'){ notifyFailureAndShow(nd); }
+          else retry(nd);
+        } catch { retry(d); }
+      },4000);
+    }
+
+    function showSuccess(d){
+      // Soutien au développeur
+      if(d.item_type==='support' || itemType==='support'){
+        document.getElementById('sucSupSub').textContent=`Votre soutien "${d.plan_label||''}" a bien été enregistré. Merci !`;
+        document.getElementById('sucSupDetails').innerHTML=`
+          <div class="result-row"><span>Palier</span><strong>${d.plan_label||'Soutien'}</strong></div>
+          <div class="result-row"><span>Statut</span><strong class="ok">✓ Validé</strong></div>
+        `;
+        document.getElementById('sucSup').classList.remove('hidden');
+        launchConfetti();
+        return;
+      }
+      // Achat stratégie / idée
+      if(d.item_type==='item' || itemType==='item' || d.item_type==='idea' || itemType==='idea'){
+        document.getElementById('sucIdeaSub').textContent=`"${d.plan_label||'Stratégie'}" a été acheté avec succès.`;
+        document.getElementById('sucIdea').classList.remove('hidden');
+        launchConfetti();
+        return;
+      }
+      // Abonnement
+      const plan=d.plan_label||'Abonnement';
+      const mins=d.duration_minutes||0;
+      const days=Math.floor(mins/1440), hrs=Math.floor((mins%1440)/60);
+      let dur=days>0?`${days} jour${days>1?'s':''}`:'';
+      if(hrs>0) dur+=(dur?' ':'')+(hrs+' heure'+(hrs>1?'s':''));
+      document.getElementById('sucSub').textContent=`Votre abonnement "${plan}" est maintenant actif.`;
+      document.getElementById('sucDetails').innerHTML=`
+        <div class="result-row"><span>Abonnement</span><strong>${plan}</strong></div>
+        <div class="result-row"><span>Durée</span><strong>${dur||plan}</strong></div>
+        <div class="result-row"><span>Statut</span><strong class="ok">✓ Actif</strong></div>
+      `;
+      document.getElementById('suc').classList.remove('hidden');
+      launchConfetti();
+    }
+
+    function showPending(d){
+      document.getElementById('penSub').textContent=`Plan : ${d.plan_label||'Abonnement'}`;
+      document.getElementById('pen').classList.remove('hidden');
+    }
+
+    function showErr(d){
+      document.getElementById('ld').style.display='none';
+      // Remplir les détails
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'});
+      const timeStr = now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+      let rows = '';
+      if(d && d.plan_label) rows += `<div class="result-row"><span>Service</span><strong>${d.plan_label}</strong></div>`;
+      if(d && d.amount_usd){ const xof=Math.round(d.amount_usd*656); if(xof>0) rows+=`<div class="result-row"><span>Montant</span><strong style="color:#F0C040">${xof.toLocaleString('fr-FR')} XOF</strong></div>`; }
+      if(d && d.phone_number) rows += `<div class="result-row"><span>Téléphone</span><strong>${d.phone_number}</strong></div>`;
+      rows += `<div class="result-row"><span>Date</span><strong>${dateStr}</strong></div>`;
+      rows += `<div class="result-row"><span>Heure</span><strong>${timeStr}</strong></div>`;
+      if(reqId) rows += `<div class="result-row"><span>Réf.</span><span style="color:rgba(255,255,255,.45)">#${reqId}</span></div>`;
+      rows += `<div class="result-row"><span>Statut</span><strong style="color:#EF4444">✗ Non confirmé</strong></div>`;
+      document.getElementById('errDetails').innerHTML = rows;
+      document.getElementById('err').classList.remove('hidden');
+      // Compte à rebours 5s → accueil
+      let sec = 5;
+      const tick = setInterval(()=>{
+        sec--;
+        const el = document.getElementById('errSec');
+        if(el) el.textContent = sec;
+        if(sec <= 0){ clearInterval(tick); window.location.href = '/'; }
+      }, 1000);
+    }
+
+    check();
+  </script>
+</body>
+</html>
