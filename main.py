@@ -19,7 +19,7 @@ from telegram.ext import (
     CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
 )
 
-from config import BOT_TOKEN, ADMINS, PORT, DATA_FILE, CHECK_INTERVAL, GEMINI_API_KEY, TELETHON_API_ID, TELETHON_API_HASH
+from config import BOT_TOKEN, ADMINS, PORT, DATA_FILE, CHECK_INTERVAL, GEMINI_API_KEY, TELETHON_API_ID, TELETHON_API_HASH, DATABASE_URL
 import telethon_manager
 
 logging.basicConfig(
@@ -42,7 +42,7 @@ if GEMINI_API_KEY:
 # ═══════════════════════════════════════════════════════════════
 # BASE DE DONNÉES POSTGRESQL
 # ═══════════════════════════════════════════════════════════════
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+# DATABASE_URL importé depuis config.py
 db_pool = None
 
 
@@ -208,6 +208,9 @@ reg_state = {}
 # Connexion: {user_id: {"step": "email"|"password", "email": str, "db_user_id": int}}
 login_state = {}
 
+# IDs Telegram des utilisateurs reconnus admin via la base de données (rempli à la connexion)
+db_admin_telegram_ids = set()
+
 # État des demandes de bonus en attente d'approbation admin
 # {user_id: {"channel_id": str, "channel_name": str, "user_name": str}}
 bonus_state = {}
@@ -263,7 +266,7 @@ def save_data(data):
 
 
 def is_admin(user_id):
-    return user_id in ADMINS
+    return user_id in ADMINS or user_id in db_admin_telegram_ids
 
 
 def format_time_remaining(seconds):
@@ -348,6 +351,7 @@ async def web_handler(request):
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', web_handler)
+    app.router.add_get('/health', lambda request: web.Response(text="OK"))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
@@ -697,20 +701,20 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         step = state.get("step")
 
         if step == "email":
-            email = text.strip().lower()
-            if not _re_mod.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
-                await update.message.reply_text("⚠️ Email invalide. Entrez un email valide:")
+            login_id = text.strip().lower()
+            if not login_id:
+                await update.message.reply_text("⚠️ Identifiant invalide. Entrez votre nom d'utilisateur ou votre email:")
                 return
-            db_user = await db_get_user_by_email(email)
+            db_user = await db_get_user_by_email(login_id)
             if not db_user:
                 login_state.pop(user.id, None)
                 await update.message.reply_text(
-                    "❌ Aucun compte trouvé avec cet email.\n\n"
+                    "❌ Aucun compte trouvé avec cet identifiant.\n\n"
                     "Tapez /start pour recommencer.",
                     reply_markup=_auth_keyboard(),
                 )
                 return
-            state["email"] = email
+            state["email"] = login_id
             state["db_user_id"] = db_user["id"]
             state["step"] = "password"
             await update.message.reply_text(
@@ -741,6 +745,8 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 return
             # Connexion OK — lier le telegram_id
             await db_link_telegram_id(db_user["id"], user.id)
+            if db_user.get("is_admin"):
+                db_admin_telegram_ids.add(user.id)
             login_state.pop(user.id, None)
             first = db_user.get("first_name") or user.first_name or "vous"
             if is_admin(user.id):
@@ -1520,7 +1526,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         login_state[uid] = {"step": "email"}
         reg_state.pop(uid, None)
         await query.edit_message_text(
-            "🔐 **Connexion**\n\nEntrez votre **adresse email**:",
+            "🔐 **Connexion**\n\nEntrez votre **identifiant** (nom d'utilisateur ou email):",
             parse_mode="Markdown",
         )
         return
@@ -3348,6 +3354,10 @@ async def main():
     asyncio.create_task(check_expirations_task(application))
 
     logger.info("✅ Bot multi-canal démarré avec succès!")
+
+    # Supprime un éventuel webhook actif : sinon start_polling plante avec une erreur
+    # "Conflict: can't use getUpdates while a webhook is set" et le bot ne répond plus du tout.
+    await application.bot.delete_webhook(drop_pending_updates=True)
 
     await application.updater.start_polling(
         drop_pending_updates=True,
