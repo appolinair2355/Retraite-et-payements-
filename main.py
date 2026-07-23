@@ -718,7 +718,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             state["db_user_id"] = db_user["id"]
             state["step"] = "password"
             await update.message.reply_text(
-                f"✅ Email: `{email}`\n\n🔑 Entrez votre **mot de passe**:",
+                f"✅ Identifiant: `{login_id}`\n\n🔑 Entrez votre **mot de passe**:",
                 parse_mode="Markdown",
             )
             return
