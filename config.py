@@ -11,7 +11,7 @@ ADMINS_STR = os.getenv("ADMINS", "1190237801")
 ADMINS = [int(x.strip()) for x in ADMINS_STR.split(",") if x.strip()]
 
 PORT = int(os.getenv("PORT", "5000"))
-
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://bonjour_user:WzeZsFKlKWU180iOFxngBEaThdG1kKUR@dpg-d962464s728c73e8p250-a.oregon-postgres.render.com/bonjour")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCLIkisyBGwLq6GZccGcCijvCFzdzZczsU")
 
 TELETHON_API_ID = int(os.getenv("TELETHON_API_ID", "29177661"))
