@@ -7,8 +7,12 @@ Assistante IA: répond automatiquement aux utilisateurs
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+import os
+import re as _re_mod
+from datetime import datetime, timedelta, timezone
 from aiohttp import web
+import asyncpg
+import bcrypt as _bcrypt
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
@@ -36,19 +40,173 @@ if GEMINI_API_KEY:
         logger.warning(f"⚠️ Impossible d'initialiser Gemini: {e}")
 
 # ═══════════════════════════════════════════════════════════════
-# CONSTANTES PAIEMENT
+# BASE DE DONNÉES POSTGRESQL
 # ═══════════════════════════════════════════════════════════════
-PRICE_PER_DAY_FCFA = 1000   # 1 000 FCFA = 1 jour (50 USD = 30 000 FCFA = 30 jours)
-USD_TO_FCFA = 600            # 1 USD = 600 FCFA
-EUR_TO_FCFA = 655            # 1 EUR = 655 FCFA (taux fixe XOF)
-GBP_TO_FCFA = 760            # 1 GBP ≈ 760 FCFA
-CAD_TO_FCFA = 440            # 1 CAD ≈ 440 FCFA
-CHF_TO_FCFA = 660            # 1 CHF ≈ 660 FCFA
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+db_pool = None
 
-# État des utilisateurs en attente d'une capture de paiement
-# Nouveau flux: étape 1 = choix du canal, étape 2 = screenshot
-# {user_id: {"step": "screenshot", "channel_id": str, "channel_name": str, ...}}
-payment_state = {}
+
+async def init_db_pool():
+    global db_pool
+    if not DATABASE_URL:
+        logger.warning("⚠️ DATABASE_URL non configuré — fonctions DB désactivées")
+        return
+    try:
+        db_pool = await asyncpg.create_pool(
+            DATABASE_URL, ssl="require", min_size=1, max_size=5, command_timeout=15
+        )
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR(120) UNIQUE NOT NULL,
+                    email VARCHAR(120) UNIQUE,
+                    password_hash VARCHAR(256) NOT NULL,
+                    first_name TEXT, last_name TEXT,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    is_approved BOOLEAN DEFAULT FALSE,
+                    is_premium BOOLEAN DEFAULT FALSE,
+                    subscription_expires_at TIMESTAMPTZ,
+                    subscription_duration_minutes INTEGER,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
+                CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_id_uniq
+                    ON users(telegram_id) WHERE telegram_id IS NOT NULL;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS plain_password TEXT;
+            """)
+        logger.info("✅ Connexion PostgreSQL établie")
+    except Exception as e:
+        logger.error(f"❌ Connexion DB échouée: {e}")
+        db_pool = None
+
+
+async def db_get_user_by_telegram_id(telegram_id: int):
+    if not db_pool:
+        return None
+    try:
+        async with db_pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM users WHERE telegram_id = $1", telegram_id
+            )
+    except Exception as e:
+        logger.error(f"DB get_user error: {e}")
+        return None
+
+
+async def db_email_exists(email: str) -> bool:
+    if not db_pool:
+        return False
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM users WHERE email = $1 OR username = $1",
+                email.lower().strip(),
+            )
+            return row is not None
+    except Exception as e:
+        logger.error(f"DB email_exists error: {e}")
+        return False
+
+
+async def db_register_user(
+    telegram_id: int, first_name: str, last_name: str, email: str, plain_password: str
+):
+    """Crée un compte utilisateur dans la base de données de paiement."""
+    if not db_pool:
+        return None, "Base de données non disponible"
+    email = email.lower().strip()
+    try:
+        pw_hash = _bcrypt.hashpw(plain_password.encode(), _bcrypt.gensalt()).decode()
+        async with db_pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO users
+                        (username, email, password_hash, first_name, last_name,
+                         is_approved, telegram_id, plain_password)
+                    VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7)
+                    RETURNING *
+                    """,
+                    email, email, pw_hash, first_name, last_name,
+                    telegram_id, plain_password,
+                )
+                return row, None
+            except Exception as insert_err:
+                err_str = str(insert_err)
+                if "23505" in err_str or "unique" in err_str.lower():
+                    return None, "email_exists"
+                return None, err_str
+    except Exception as e:
+        logger.error(f"DB register_user error: {e}")
+        return None, str(e)
+
+
+async def db_check_subscription(telegram_id: int):
+    """Retourne les infos d'abonnement actif ou None si expiré/inexistant."""
+    user = await db_get_user_by_telegram_id(telegram_id)
+    if not user:
+        return None
+    expires_at = user["subscription_expires_at"]
+    if not expires_at:
+        return None
+    now = datetime.now(timezone.utc)
+    exp = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+    if exp > now:
+        return {
+            "expires_at": exp,
+            "duration_minutes": user.get("subscription_duration_minutes") or 0,
+            "first_name": user.get("first_name") or "",
+            "last_name": user.get("last_name") or "",
+            "email": user.get("email") or "",
+        }
+    return None
+
+
+async def db_get_user_by_email(email: str):
+    """Recherche un utilisateur par email."""
+    if not db_pool:
+        return None
+    try:
+        async with db_pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM users WHERE email = $1 OR username = $1",
+                email.lower().strip(),
+            )
+    except Exception as e:
+        logger.error(f"DB get_user_by_email error: {e}")
+        return None
+
+
+async def db_link_telegram_id(db_user_id: int, telegram_id: int) -> bool:
+    """Lie un Telegram ID à un compte existant (délie l'ancien si nécessaire)."""
+    if not db_pool:
+        return False
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET telegram_id = NULL WHERE telegram_id = $1 AND id != $2",
+                telegram_id, db_user_id,
+            )
+            await conn.execute(
+                "UPDATE users SET telegram_id = $1 WHERE id = $2",
+                telegram_id, db_user_id,
+            )
+        return True
+    except Exception as e:
+        logger.error(f"DB link_telegram_id error: {e}")
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# ÉTATS CONVERSATIONNELS
+# ═══════════════════════════════════════════════════════════════
+
+# Inscription: {user_id: {"step": "first_name"|"last_name"|"email"|"password"|"confirm", ...}}
+reg_state = {}
+
+# Connexion: {user_id: {"step": "email"|"password", "email": str, "db_user_id": int}}
+login_state = {}
 
 # État des demandes de bonus en attente d'approbation admin
 # {user_id: {"channel_id": str, "channel_name": str, "user_name": str}}
@@ -533,7 +691,189 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text:
         return
 
-    # 0. Intercepter les états admin (configuration interactive)
+    # 0a. Intercepter le flux de CONNEXION
+    if user.id in login_state:
+        state = login_state[user.id]
+        step = state.get("step")
+
+        if step == "email":
+            email = text.strip().lower()
+            if not _re_mod.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+                await update.message.reply_text("⚠️ Email invalide. Entrez un email valide:")
+                return
+            db_user = await db_get_user_by_email(email)
+            if not db_user:
+                login_state.pop(user.id, None)
+                await update.message.reply_text(
+                    "❌ Aucun compte trouvé avec cet email.\n\n"
+                    "Tapez /start pour recommencer.",
+                    reply_markup=_auth_keyboard(),
+                )
+                return
+            state["email"] = email
+            state["db_user_id"] = db_user["id"]
+            state["step"] = "password"
+            await update.message.reply_text(
+                f"✅ Email: `{email}`\n\n🔑 Entrez votre **mot de passe**:",
+                parse_mode="Markdown",
+            )
+            return
+
+        elif step == "password":
+            password = text.strip()
+            db_user = await db_get_user_by_email(state.get("email", ""))
+            if not db_user:
+                login_state.pop(user.id, None)
+                await update.message.reply_text(
+                    "❌ Session expirée. Tapez /start pour recommencer.",
+                    reply_markup=_auth_keyboard(),
+                )
+                return
+            pw_hash = db_user.get("password_hash") or ""
+            try:
+                ok = _bcrypt.checkpw(password.encode(), pw_hash.encode())
+            except Exception:
+                ok = False
+            if not ok:
+                await update.message.reply_text(
+                    "❌ Mot de passe incorrect.\n\nRéessayez ou tapez /start."
+                )
+                return
+            # Connexion OK — lier le telegram_id
+            await db_link_telegram_id(db_user["id"], user.id)
+            login_state.pop(user.id, None)
+            first = db_user.get("first_name") or user.first_name or "vous"
+            if is_admin(user.id):
+                data = load_data()
+                panel_text, panel_kb = build_admin_panel(data)
+                await update.message.reply_text(
+                    f"🎉 **Connexion réussie! Bienvenue, {first}!**",
+                    parse_mode="Markdown",
+                )
+                await update.message.reply_text(panel_text, reply_markup=panel_kb, parse_mode="Markdown")
+            else:
+                menu_text, menu_kb = _user_main_menu(first)
+                await update.message.reply_text(
+                    f"🎉 **Connexion réussie! Bienvenue, {first}!**\n\n" + menu_text.split("**\n\n", 1)[-1],
+                    reply_markup=menu_kb,
+                    parse_mode="Markdown",
+                )
+            return
+        return  # état inconnu
+
+    # 0b. Intercepter le flux d'INSCRIPTION
+    if user.id in reg_state:
+        state = reg_state[user.id]
+        step = state.get("step")
+
+        if step == "first_name":
+            fn = text.strip()
+            if len(fn) < 2:
+                await update.message.reply_text("⚠️ Prénom trop court. Réessayez:")
+                return
+            state["first_name"] = fn
+            state["step"] = "last_name"
+            await update.message.reply_text(
+                f"✅ Prénom: **{fn}**\n\n📝 **Étape 2/4** — Quel est votre **nom de famille**?",
+                parse_mode="Markdown",
+            )
+            return
+
+        elif step == "last_name":
+            ln = text.strip()
+            if len(ln) < 2:
+                await update.message.reply_text("⚠️ Nom trop court. Réessayez:")
+                return
+            state["last_name"] = ln
+            state["step"] = "email"
+            await update.message.reply_text(
+                f"✅ Nom: **{ln}**\n\n"
+                "📝 **Étape 3/4** — Entrez votre **adresse email**\n"
+                "_(ce sera votre identifiant de connexion sur le site de paiement)_",
+                parse_mode="Markdown",
+            )
+            return
+
+        elif step == "email":
+            email = text.strip().lower()
+            if not _re_mod.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+                await update.message.reply_text("⚠️ Email invalide. Entrez un email valide:")
+                return
+            if await db_email_exists(email):
+                await update.message.reply_text(
+                    "⚠️ Cet email est déjà utilisé.\n\nEntrez un autre email ou contactez un administrateur."
+                )
+                return
+            state["email"] = email
+            state["step"] = "password"
+            await update.message.reply_text(
+                f"✅ Email: **{email}**\n\n"
+                "📝 **Étape 4/4** — Choisissez un **mot de passe** (minimum 6 caractères):",
+                parse_mode="Markdown",
+            )
+            return
+
+        elif step == "password":
+            pw = text.strip()
+            if len(pw) < 6:
+                await update.message.reply_text("⚠️ Mot de passe trop court (minimum 6 caractères). Réessayez:")
+                return
+            state["password"] = pw
+            state["step"] = "confirm"
+            await update.message.reply_text(
+                "📝 **Confirmation** — Répétez votre mot de passe:", parse_mode="Markdown"
+            )
+            return
+
+        elif step == "confirm":
+            if text.strip() != state.get("password"):
+                await update.message.reply_text(
+                    "❌ Les mots de passe ne correspondent pas.\n\nEntrez votre mot de passe à nouveau:"
+                )
+                state["step"] = "password"
+                return
+            await update.message.reply_text("⏳ Création de votre compte en cours...")
+            row, err = await db_register_user(
+                user.id,
+                state.get("first_name", ""),
+                state.get("last_name", ""),
+                state.get("email", ""),
+                state.get("password", ""),
+            )
+            reg_state.pop(user.id, None)
+            if err:
+                if err == "email_exists":
+                    msg = "❌ Cet email est déjà enregistré.\n\nTapez /start pour vous connecter."
+                else:
+                    logger.error(f"Erreur inscription user {user.id}: {err}")
+                    msg = "❌ Une erreur est survenue. Contactez un administrateur.\n\nTapez /start pour recommencer."
+                await update.message.reply_text(msg, reply_markup=_auth_keyboard())
+                return
+            # Inscription réussie — le telegram_id est déjà lié (fait dans db_register_user)
+            first = state.get("first_name", "")
+            if is_admin(user.id):
+                data = load_data()
+                panel_text, panel_kb = build_admin_panel(data)
+                await update.message.reply_text(
+                    f"🎉 **Compte créé! Bienvenue, {first}!**\n\n"
+                    f"📧 Email: `{state.get('email', '')}`",
+                    parse_mode="Markdown",
+                )
+                await update.message.reply_text(panel_text, reply_markup=panel_kb, parse_mode="Markdown")
+            else:
+                menu_text, menu_kb = _user_main_menu(first or user.first_name or "vous")
+                await update.message.reply_text(
+                    f"🎉 **Compte créé avec succès!**\n\n"
+                    f"👤 {state.get('first_name', '')} {state.get('last_name', '')}\n"
+                    f"📧 Email: `{state.get('email', '')}`\n\n"
+                    f"Vous pouvez dès maintenant payer votre abonnement.",
+                    parse_mode="Markdown",
+                )
+                await update.message.reply_text(menu_text, reply_markup=menu_kb, parse_mode="Markdown")
+            return
+        return  # état inconnu
+
+    # 0b. Intercepter les états admin (configuration interactive)
     if is_admin(user.id) and user.id in admin_state:
         state = admin_state[user.id]
         action = state.get("action")
@@ -684,14 +1024,6 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if auth_done:
             session_str = await telethon_manager.get_session_string()
             await save_telethon_session(session_str, context, user.id)
-        return
-
-    # 2. Si l'utilisateur est en attente d'une capture de paiement, lui rappeler
-    if user.id in payment_state and payment_state[user.id].get("step") == "screenshot":
-        await update.message.reply_text(
-            "📸 Envoyez la **capture d'écran** de votre paiement (une image).",
-            parse_mode="Markdown"
-        )
         return
 
     # 3. L'IA ne répond QUE si l'utilisateur est en mode assistance
@@ -1171,7 +1503,44 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split("_")
     action = parts[0]
 
-    # Accessible à tous les utilisateurs
+    # ── INSCRIPTION ────────────────────────────────────────────
+    if query.data == "inscription":
+        uid = update.effective_user.id
+        reg_state[uid] = {"step": "first_name"}
+        login_state.pop(uid, None)
+        await query.edit_message_text(
+            "📝 **Inscription — Étape 1/4**\n\nQuel est votre **prénom**?",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── CONNEXION ──────────────────────────────────────────────
+    if query.data == "connexion":
+        uid = update.effective_user.id
+        login_state[uid] = {"step": "email"}
+        reg_state.pop(uid, None)
+        await query.edit_message_text(
+            "🔐 **Connexion**\n\nEntrez votre **adresse email**:",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── GARDE D'AUTHENTIFICATION ───────────────────────────────
+    # Tous les autres callbacks nécessitent d'être connecté
+    _db_user = await db_get_user_by_telegram_id(update.effective_user.id)
+    if not _db_user:
+        try:
+            await query.edit_message_text(
+                "🔒 **Accès refusé**\n\n"
+                "Vous devez vous connecter ou créer un compte pour continuer.",
+                reply_markup=_auth_keyboard(),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        return
+    # ── FIN GARDE ──────────────────────────────────────────────
+
     if query.data == "assist_start":
         user = update.effective_user
         first_name = user.first_name or "vous"
@@ -1202,25 +1571,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ Session terminée.")
         if is_admin(user.id):
             data = load_data()
-            text, kb = build_admin_panel(data)
-            await context.bot.send_message(user.id, text, reply_markup=kb, parse_mode="Markdown")
+            panel_text, panel_kb = build_admin_panel(data)
+            await context.bot.send_message(user.id, panel_text, reply_markup=panel_kb, parse_mode="Markdown")
         else:
-            user_keyboard = [
-                [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
-                [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
-                [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
-                [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
-            ]
-            await context.bot.send_message(
-                user.id,
-                f"🏠 **Menu principal**\n\n"
-                f"• 📊 Vérifier votre **durée restante** d'accès\n"
-                f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
-                f"• 🎁 Demander un accès gratuit (bonus)\n"
-                f"• 💬 Contacter l'assistance",
-                reply_markup=InlineKeyboardMarkup(user_keyboard),
-                parse_mode="Markdown"
-            )
+            first = _db_user.get("first_name") or user.first_name or "vous"
+            menu_text, menu_kb = _user_main_menu(first)
+            await context.bot.send_message(user.id, menu_text, reply_markup=menu_kb, parse_mode="Markdown")
         return
 
     # ── Callbacks accessibles à tous les utilisateurs ─────────────────
@@ -1269,86 +1625,131 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_state.pop(user.id, None)
         if is_admin(user.id):
             data = load_data()
-            text, kb = build_admin_panel(data)
-            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+            panel_text, panel_kb = build_admin_panel(data)
+            await query.edit_message_text(panel_text, reply_markup=panel_kb, parse_mode="Markdown")
         else:
-            user_keyboard = [
-                [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
-                [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
-                [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
-                [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
-            ]
-            await query.edit_message_text(
-                f"🏠 **Menu principal**\n\n"
-                f"• 📊 Vérifier votre **durée restante** d'accès\n"
-                f"• 💳 Payer votre abonnement (**50 USD/mois** ou {PRICE_PER_DAY_FCFA} FCFA/jour)\n"
-                f"• 🎁 Demander un accès gratuit (bonus)\n"
-                f"• 💬 Contacter l'assistance",
-                reply_markup=InlineKeyboardMarkup(user_keyboard),
-                parse_mode="Markdown"
-            )
+            first = _db_user.get("first_name") or user.first_name or "vous"
+            menu_text, menu_kb = _user_main_menu(first)
+            await query.edit_message_text(menu_text, reply_markup=menu_kb, parse_mode="Markdown")
         return
 
     if query.data == "pay_start":
         user = update.effective_user
-        data = load_data()
-        channels = data.get("channels", {})
-        if not channels:
-            await query.edit_message_text("ℹ️ Aucun canal disponible pour le moment.\nContactez un administrateur.")
-            return
-        # Si un seul canal → aller directement à la capture d'écran
-        if len(channels) == 1:
-            cid = list(channels.keys())[0]
-            ch_name = channels[cid].get("name", cid)
-            payment_state[user.id] = {"step": "screenshot", "channel_id": cid, "channel_name": ch_name}
+        db_user = await db_get_user_by_telegram_id(user.id)
+        if not db_user:
             await query.edit_message_text(
-                f"💳 **Paiement**\n\n"
-                f"📢 Canal: **{ch_name}**\n\n"
-                f"📸 Envoyez la **capture d'écran** de votre paiement dans ce chat.\n\n"
-                f"Le bot vérifiera automatiquement le montant et activera votre accès immédiatement.\n\n"
-                f"💵 Taux: **{PRICE_PER_DAY_FCFA} FCFA = 1 jour** | **50 USD = 1 mois**\n\n"
-                f"_Appuyez sur /annuler pour annuler._",
-                parse_mode="Markdown"
+                "❌ Vous devez d'abord créer un compte.\n\nTapez /start pour vous inscrire.",
+                parse_mode="Markdown",
             )
-        else:
-            await query.edit_message_text(
-                f"💳 **Paiement — Étape 1/2**\n\n"
-                f"Choisissez le **canal** auquel vous souhaitez accéder:",
-                reply_markup=_build_payer_channel_keyboard(user.id, channels),
-                parse_mode="Markdown"
-            )
-        return
-
-    if action == "pch":
-        payer_uid = int(parts[1])
-        cid = "_".join(parts[2:])   # au cas où cid contiendrait un séparateur
-        if update.effective_user.id != payer_uid:
-            await query.answer("Ce bouton ne vous est pas destiné.", show_alert=True)
             return
-        data = load_data()
-        if cid not in data.get("channels", {}):
-            await query.edit_message_text("❌ Canal introuvable.")
-            return
-        ch_name = data["channels"][cid].get("name", cid)
-        payment_state[payer_uid] = {"step": "screenshot", "channel_id": cid, "channel_name": ch_name}
+        email = db_user.get("email") or "votre email"
+        pay_keyboard = [
+            [InlineKeyboardButton(
+                "🌐 Accéder au site de paiement",
+                url="https://paiement-s-curis.onrender.com",
+            )],
+            [InlineKeyboardButton(
+                "✅ J'ai payé — Vérifier mon accès",
+                callback_data="check_payment",
+            )],
+            [InlineKeyboardButton("🏠 Menu principal", callback_data="back_main")],
+        ]
         await query.edit_message_text(
-            f"💳 **Paiement — Étape 2/2**\n\n"
-            f"📢 Canal choisi: **{ch_name}**\n\n"
-            f"📸 Envoyez maintenant la **capture d'écran** de votre paiement dans ce chat.\n\n"
-            f"Le bot vérifiera automatiquement le montant, la devise et que le reçu n'a pas déjà été utilisé, "
-            f"puis activera votre accès immédiatement.\n\n"
-            f"💵 Taux: **{PRICE_PER_DAY_FCFA} FCFA = 1 jour** | **50 USD = 1 mois**",
-            parse_mode="Markdown"
+            "💳 **Paiement d'abonnement**\n\n"
+            "Pour activer votre accès:\n\n"
+            "1️⃣ Cliquez sur **\"Accéder au site de paiement\"**\n"
+            f"2️⃣ Connectez-vous avec:\n"
+            f"   📧 Email: `{email}`\n"
+            f"   🔑 Votre mot de passe\n"
+            "3️⃣ Effectuez votre paiement\n"
+            "4️⃣ Revenez ici et cliquez **\"J'ai payé\"**\n\n"
+            "_Votre accès sera activé automatiquement après vérification._",
+            reply_markup=InlineKeyboardMarkup(pay_keyboard),
+            parse_mode="Markdown",
         )
         return
 
-    if action == "paycancel":
-        payer_uid = int(parts[1])
-        payment_state.pop(payer_uid, None)
-        try:
-            await query.edit_message_text("❌ Paiement annulé.")
-        except Exception:
-            pass
+    if query.data == "check_payment":
+        user = update.effective_user
+        sub = await db_check_subscription(user.id)
+        if not sub:
+            pay_keyboard = [
+                [InlineKeyboardButton(
+                    "🌐 Accéder au site de paiement",
+                    url="https://paiement-s-curis.onrender.com",
+                )],
+                [InlineKeyboardButton("🔄 Vérifier à nouveau", callback_data="check_payment")],
+                [InlineKeyboardButton("🏠 Menu principal", callback_data="back_main")],
+            ]
+            await query.edit_message_text(
+                "⏳ **Paiement non encore détecté**\n\n"
+                "Votre paiement n'est pas encore enregistré dans notre système.\n\n"
+                "• Assurez-vous d'avoir complété le paiement sur le site\n"
+                "• Attendez quelques secondes puis cliquez **Vérifier à nouveau**\n\n"
+                "_Si le problème persiste, contactez un administrateur._",
+                reply_markup=InlineKeyboardMarkup(pay_keyboard),
+                parse_mode="Markdown",
+            )
+            return
+        # Paiement confirmé — accorder l'accès
+        expires_at = sub["expires_at"]
+        duration_min = sub.get("duration_minutes", 0)
+        expire_str = expires_at.strftime("%d/%m/%Y à %H:%M")
+        expires_ts = int(expires_at.timestamp())
+        if duration_min >= 43200:
+            dur_label = f"{duration_min // 43200} mois"
+        elif duration_min >= 1440:
+            dur_label = f"{duration_min // 1440} jour(s)"
+        elif duration_min > 0:
+            dur_label = f"{duration_min} minute(s)"
+        else:
+            dur_label = "abonnement actif"
+
+        data = load_data()
+        channels = data.get("channels", {})
+        uid_str = str(user.id)
+        current_time = int(datetime.now().timestamp())
+
+        for cid, ch in channels.items():
+            existing = ch.get("members", {}).get(uid_str, {})
+            if existing.get("expires_at", 0) >= expires_ts:
+                continue
+            duration_seconds = max(expires_ts - current_time, 0)
+            ch.setdefault("members", {})[uid_str] = {
+                "expires_at": expires_ts,
+                "granted_at": current_time,
+                "duration_seconds": duration_seconds,
+            }
+            ch.setdefault("blocked", {}).pop(uid_str, None)
+            try:
+                await context.bot.unban_chat_member(int(cid), user.id, only_if_banned=True)
+            except Exception:
+                pass
+            try:
+                invite_obj = await context.bot.create_chat_invite_link(int(cid), member_limit=1)
+                invite_link = invite_obj.invite_link
+                pending_invites[(cid, uid_str)] = invite_link
+                await context.bot.send_message(
+                    user.id,
+                    f"🎉 **Accès activé — {ch.get('name', cid)}**\n\n"
+                    f"👇 Rejoignez le canal:\n{invite_link}\n\n"
+                    "⚠️ Lien à usage unique — ne le partagez pas.",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.warning(f"Lien invite canal {cid}: {e}")
+
+        save_data(data)
+        first_name = sub.get("first_name") or user.first_name or "utilisateur"
+        last_name = sub.get("last_name") or user.last_name or ""
+        await query.edit_message_text(
+            "🎉 **Paiement confirmé!**\n\n"
+            f"Sossou Kouamé vous remercie pour votre confiance, "
+            f"vous avez payé un abonnement de **{dur_label}** "
+            f"qui expire le **{expire_str}**.\n\n"
+            "✅ Vos accès aux canaux ont été activés.",
+            parse_mode="Markdown",
+        )
         return
 
     if query.data == "bonus_start":
@@ -1546,14 +1947,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ **Demande de bonus refusée**\n\n"
                 f"📢 Canal: **{ch_name}**\n\n"
                 f"Votre demande n'a pas été approuvée.\n"
-                f"Pour accéder au canal, effectuez un paiement via /payer",
-                parse_mode="Markdown"
+                f"Pour accéder au canal, payez votre abonnement via /start → 💳 Payer.",
+                parse_mode="Markdown",
             )
         except Exception:
             pass
         await query.edit_message_text(
             f"❌ Demande de `{requester_uid}` refusée pour **{ch_name}**.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
 
@@ -2037,97 +2438,70 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "paychan":
-        # paychan_{user_id}_{cid}
-        payer_uid = int(parts[1])
-        cid = parts[2]
-        state = payment_state.get(payer_uid, {})
-
-        if state.get("step") != "channel":
-            await query.edit_message_text("❌ Session expirée. Recommencez avec /payer")
-            return
-
-        hours = state["hours"]
-        amount_str = state["amount_str"]
-        amount_fcfa = state["amount_fcfa"]
-        photo_file_id = state.get("photo_file_id")
-
-        data = load_data()
-        if cid not in data.get("channels", {}):
-            await query.edit_message_text("❌ Canal introuvable.")
-            payment_state.pop(payer_uid, None)
-            return
-
-        ch = data["channels"][cid]
-        current_time = int(datetime.now().timestamp())
-        duration_seconds = hours * 3600
-        expires_at = current_time + duration_seconds
-
-        ch.setdefault("members", {})[str(payer_uid)] = {
-            "expires_at": expires_at,
-            "granted_at": current_time,
-            "duration_seconds": duration_seconds
-        }
-        ch.setdefault("blocked", {}).pop(str(payer_uid), None)
-        save_data(data)
-
-        dur_label = format_duration_label(duration_seconds)
-        expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M')
-
-        # Débloquer si banni
-        try:
-            await context.bot.unban_chat_member(int(cid), payer_uid, only_if_banned=True)
-        except Exception:
-            pass
-
-        # Confirmer à l'utilisateur
+        # Flux obsolète — rediriger vers le nouveau système
         await query.edit_message_text(
-            f"🎉 **Accès activé avec succès!**\n\n"
-            f"📢 Canal: **{ch['name']}**\n"
-            f"💰 Montant payé: **{amount_str}**\n"
-            f"⏱ Durée: **{dur_label}**\n"
-            f"📅 Expire le: {expire_str}\n\n"
-            f"✅ Vous pouvez maintenant rejoindre le canal.",
-            parse_mode="Markdown"
+            "⚠️ Ce lien est obsolète.\n\nUtilisez le bouton **💳 Payer mon abonnement** depuis /start.",
+            parse_mode="Markdown",
         )
-
-        payment_state.pop(payer_uid, None)
-
-        # Notifier les admins
-        user = update.effective_user
-        if photo_file_id:
-            await notify_admins_payment(
-                context, user, cid, ch["name"], amount_str, hours, photo_file_id
-            )
 
 
 # ═══════════════════════════════════════════════════════════════
 # COMMANDES ADMIN
 # ═══════════════════════════════════════════════════════════════
 
+def _auth_keyboard():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📝 S'inscrire", callback_data="inscription"),
+        InlineKeyboardButton("🔐 Se connecter", callback_data="connexion"),
+    ]])
+
+
+def _user_main_menu(first_name: str) -> tuple:
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
+        [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
+        [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
+        [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")],
+    ])
+    text = (
+        f"👋 **Bonjour {first_name}!**\n\n"
+        "• 📊 Vérifier votre durée restante\n"
+        "• 💳 Payer votre abonnement\n"
+        "• 🎁 Demander un accès gratuit (bonus)\n"
+        "• 💬 Contacter l'assistance"
+    )
+    return text, kb
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    if is_admin(user_id):
-        data = load_data()
-        text, kb = build_admin_panel(data)
-        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
-    else:
-        user_keyboard = [
-            [InlineKeyboardButton("📊 Mon statut d'abonnement", callback_data="my_status")],
-            [InlineKeyboardButton("💳 Payer mon abonnement", callback_data="pay_start")],
-            [InlineKeyboardButton("🎁 Demander un bonus", callback_data="bonus_start")],
-            [InlineKeyboardButton("💬 Assistance", callback_data="assist_start")]
-        ]
-        await update.message.reply_text(
-            "👋 **Bienvenue!**\n\n"
-            f"• 📊 Vérifier votre **durée restante** d'accès\n"
-            f"• 💳 Abonnement mensuel: **50 USD / mois**\n"
-            f"• 💵 Ou: **{PRICE_PER_DAY_FCFA} FCFA / jour**\n"
-            f"• 🎁 Demander un accès gratuit (bonus)\n"
-            f"• 💬 Contacter l'assistance",
-            reply_markup=InlineKeyboardMarkup(user_keyboard),
-            parse_mode="Markdown"
-        )
+    # Réinitialiser tout flux en cours
+    reg_state.pop(user_id, None)
+    login_state.pop(user_id, None)
+
+    # Vérifier si déjà connecté (telegram_id lié dans la DB)
+    db_user = await db_get_user_by_telegram_id(user_id)
+    if db_user:
+        first = db_user.get("first_name") or update.effective_user.first_name or "vous"
+        if is_admin(user_id):
+            data = load_data()
+            panel_text, panel_kb = build_admin_panel(data)
+            await update.message.reply_text(panel_text, reply_markup=panel_kb, parse_mode="Markdown")
+        else:
+            menu_text, menu_kb = _user_main_menu(first)
+            await update.message.reply_text(menu_text, reply_markup=menu_kb, parse_mode="Markdown")
+        return
+
+    # Non connecté — afficher l'écran d'accueil avec inscription/connexion
+    await update.message.reply_text(
+        "👋 **Bienvenue sur le bot Sossou Kouamé!**\n\n"
+        "Pour accéder à nos services, veuillez vous identifier:\n\n"
+        "• 📝 **S'inscrire** — Je n'ai pas encore de compte\n"
+        "• 🔐 **Se connecter** — J'ai déjà un compte",
+        reply_markup=_auth_keyboard(),
+        parse_mode="Markdown",
+    )
 
 
 async def statut_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2611,652 +2985,66 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text = (
             "📖 **Aide**\n\n"
-            "• `/payer` — Payer et accéder à un canal\n"
+            "• `/start` — Menu principal et paiement\n"
             "• `/bonus` — Demander un accès gratuit\n"
-            "• `/start` — Menu principal"
+            "• `/statut` — Voir votre abonnement"
         )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
 # ═══════════════════════════════════════════════════════════════
-# SYSTÈME DE PAIEMENT PAR CAPTURE D'ÉCRAN
+# COMMANDES PAIEMENT
 # ═══════════════════════════════════════════════════════════════
 
-def _parse_amount_robust(value) -> float:
-    """Convertit une valeur montant en float, gère virgule européenne et espaces."""
-    if isinstance(value, (int, float)):
-        return float(value)
-    s = str(value).strip()
-    # Format européen: "1 234,56" ou "1.234,56" → enlever séparateurs de milliers
-    # Détecter si la virgule est décimale (format européen) ou le point
-    s = s.replace(" ", "").replace("\u00a0", "")  # espaces insécables
-    if "," in s and "." in s:
-        # Ex: "1.234,56" → virgule = décimale
-        s = s.replace(".", "").replace(",", ".")
-    elif "," in s:
-        # Ex: "50,00" → virgule = décimale (format français)
-        s = s.replace(",", ".")
-    # Supprimer tout caractère non numérique sauf le point
-    import re as _re
-    s = _re.sub(r"[^\d.]", "", s)
-    return float(s) if s else 0.0
-
-
-CURRENCY_TABLE = {
-    # Franc CFA et variantes
-    "XOF": ("FCFA", 1.0),
-    "FCFA": ("FCFA", 1.0),
-    "CFA": ("FCFA", 1.0),
-    "XAF": ("FCFA", 1.0),
-    # Dollar américain
-    "USD": ("USD", USD_TO_FCFA),
-    "$": ("USD", USD_TO_FCFA),
-    "US$": ("USD", USD_TO_FCFA),
-    # Euro (France, Europe)
-    "EUR": ("EUR", EUR_TO_FCFA),
-    "€": ("EUR", EUR_TO_FCFA),
-    # Livre sterling
-    "GBP": ("GBP", GBP_TO_FCFA),
-    "£": ("GBP", GBP_TO_FCFA),
-    # Dollar canadien
-    "CAD": ("CAD", CAD_TO_FCFA),
-    "CA$": ("CAD", CAD_TO_FCFA),
-    # Franc suisse
-    "CHF": ("CHF", CHF_TO_FCFA),
-    # Franc guinéen
-    "GNF": ("GNF", 0.1),
-    # Franc congolais
-    "CDF": ("CDF", 0.0003),
-    # Stablecoins (1 USD ≈ 600 FCFA)
-    "USDT": ("USDT", USD_TO_FCFA),
-    "USDC": ("USDC", USD_TO_FCFA),
-    "BUSD": ("BUSD", USD_TO_FCFA),
-    "DAI":  ("DAI",  USD_TO_FCFA),
-}
-
-# Taux de repli pour les cryptos (mis à jour si CoinGecko répond)
-CRYPTO_FALLBACK_FCFA = {
-    "BNB":  228000,
-    "ETH":  1_200_000,
-    "BTC":  48_000_000,
-    "TRX":  60,
-    "SOL":  90_000,
-    "MATIC": 360,
-    "ADA":  360,
-    "DOGE": 60,
-    "XRP":  360,
-    "LTC":  30_000,
-}
-
-# Map symbole → ID CoinGecko
-COINGECKO_IDS = {
-    "BNB":  "binancecoin",
-    "ETH":  "ethereum",
-    "BTC":  "bitcoin",
-    "TRX":  "tron",
-    "SOL":  "solana",
-    "MATIC": "matic-network",
-    "ADA":  "cardano",
-    "DOGE": "dogecoin",
-    "XRP":  "ripple",
-    "LTC":  "litecoin",
-}
-
-# Cache des prix crypto (symbol → (rate_fcfa, timestamp))
-_crypto_cache: dict = {}
-
-
-async def _get_crypto_rate_fcfa(symbol: str) -> float:
-    """Récupère le taux XOF d'une crypto via CoinGecko (cache 30 min)."""
-    import time as _time
-    import aiohttp as _aiohttp
-
-    symbol = symbol.upper()
-    cached = _crypto_cache.get(symbol)
-    if cached and _time.time() - cached[1] < 1800:
-        return cached[0]
-
-    coin_id = COINGECKO_IDS.get(symbol)
-    if not coin_id:
-        return float(CRYPTO_FALLBACK_FCFA.get(symbol, 600))
-
-    try:
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-        async with _aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=_aiohttp.ClientTimeout(total=8)) as resp:
-                data = await resp.json(content_type=None)
-        price_usd = float(data[coin_id]["usd"])
-        rate = price_usd * USD_TO_FCFA
-        _crypto_cache[symbol] = (rate, _time.time())
-        logger.info(f"CoinGecko: 1 {symbol} = ${price_usd} = {rate:,.0f} FCFA")
-        return rate
-    except Exception as e:
-        logger.warning(f"CoinGecko erreur pour {symbol}: {e} — fallback utilisé")
-        return float(CRYPTO_FALLBACK_FCFA.get(symbol, 600))
-
-
-OCR_API_KEY = "K86527928888957"
-
-
-async def _ocr_extract_text(image_bytes: bytes) -> str:
-    """Extrait le texte d'une image via l'API OCR.space — multilingue automatique."""
-    import base64 as _b64
-    import aiohttp as _aiohttp
-
-    b64 = _b64.b64encode(image_bytes).decode()
-    payload = {
-        "apikey": OCR_API_KEY,
-        "language": "auto",
-        "isOverlayRequired": "false",
-        "base64Image": f"data:image/jpeg;base64,{b64}",
-        "OCREngine": "2",
-        "scale": "true",
-        "detectOrientation": "true"
-    }
-    url = "https://api.ocr.space/parse/image"
-    async with _aiohttp.ClientSession() as session:
-        async with session.post(url, data=payload, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
-            result = await resp.json(content_type=None)
-    if result.get("ParsedResults"):
-        return result["ParsedResults"][0].get("ParsedText", "")
-    logger.warning(f"OCR.space: pas de résultat — {result.get('ErrorMessage', '')}")
-    return ""
-
-
-def _parse_payment_text(text: str) -> dict:
-    """Parse le texte OCR pour extraire montant, devise, référence et application."""
-    import re as _re
-
-    t = text.upper()
-
-    # ── Détecter l'application de paiement (multilingue) ───────────────
-    app_map = {
-        # Crypto exchanges
-        "BINANCE": "Binance", "TRUST WALLET": "Trust Wallet", "TRUSTWALLET": "Trust Wallet",
-        "COINBASE": "Coinbase", "KUCOIN": "KuCoin", "BYBIT": "Bybit",
-        "CRYPTO.COM": "Crypto.com", "METAMASK": "MetaMask",
-        # Mobile money Afrique
-        "WAVE": "Wave", "ORANGE MONEY": "Orange Money", "MTN MONEY": "MTN Money",
-        "MONEYFUSION": "MoneyFusion", "MONEY FUSION": "MoneyFusion",
-        "MOOV": "Moov Money", "FLOOZ": "Flooz", "AIRTEL": "Airtel Money",
-        "TMONEY": "T-Money", "FREE MONEY": "Free Money", "YUP": "Yup",
-        # International
-        "PAYPAL": "PayPal", "REVOLUT": "Revolut", "WISE": "Wise",
-        "CASHAPP": "CashApp", "CASH APP": "CashApp", "VENMO": "Venmo",
-        "LYDIA": "Lydia", "SUMERIA": "Sumeria",
-    }
-    app_name = "Inconnu"
-    for kw, name in app_map.items():
-        if kw in t:
-            app_name = name
-            break
-
-    # Liste des symboles crypto supportés
-    _CRYPTO = r'(BNB|ETH|BTC|TRX|USDT|USDC|BUSD|DAI|SOL|MATIC|ADA|DOGE|XRP|LTC)'
-
-    # ── Détecter montant + devise ───────────────────────────────────────
-    # Chaque pattern: (regex, groupe_montant, devise_fixe_ou_None)
-    patterns = [
-        # ── Crypto ──
-        # Ex: "Сумма : 0.04 BNB" / "Amount 0.04 BNB" / "-0.03999 BNB"
-        # Mot-clé multilingue (montant / amount / сумма / итого / total / sum / сумм)
-        (r'(?:MONTANT|AMOUNT|СУММА|ИТОГО|TOTAL|SUM|SOMME)[:\s*]+[-]?(\d+[.,]\d+)\s*' + _CRYPTO, 1, None),
-        # Valeur crypto directe avec signe optionnel
-        (r'[-]?(\d+[.,]\d{1,8})\s*' + _CRYPTO, 1, None),
-        # ── Fiat avec devise explicite ──
-        # FCFA/XOF/GNF/CDF — gère decimaux et séparateurs milliers
-        (r'((?:\d{1,3}(?:[\s\xa0]\d{3})+|\d+)(?:[.,]\d{1,3})?)\s*(FCFA|XOF|GNF|CDF)', 1, None),
-        # Stablecoins (priorité sur USD pour USDT/USDC)
-        (r'(\d+[.,]\d{1,4})\s*(USDT|USDC|BUSD|DAI)', 1, None),
-        # USD: $50.00 ou 50.00 USD
-        (r'\$\s*(\d+[.,]\d{1,2})', 1, 'USD'),
-        (r'(\d+[.,]\d{1,2})\s*USD', 1, 'USD'),
-        # EUR: €50,00 ou 50,00 EUR
-        (r'€\s*(\d+[.,]\d{1,2})', 1, 'EUR'),
-        (r'(\d+[.,]\d{1,2})\s*EUR', 1, 'EUR'),
-        # GBP: £50.00 ou 50.00 GBP
-        (r'£\s*(\d+[.,]\d{1,2})', 1, 'GBP'),
-        (r'(\d+[.,]\d{1,2})\s*GBP', 1, 'GBP'),
-        # CAD: 50.00 CAD
-        (r'CA\$\s*(\d+[.,]\d{1,2})', 1, 'CAD'),
-        (r'(\d+[.,]\d{1,2})\s*CAD', 1, 'CAD'),
-        # CHF
-        (r'(\d+[.,]\d{1,2})\s*CHF', 1, 'CHF'),
-        # ── Fallback ──
-        # Mot-clé montant + nombre décimal seul → FCFA
-        (r'(?:MONTANT|AMOUNT|СУММА|ИТОГО|TOTAL|SUM)[:\s]+(\d+[.,]\d{1,3})', 1, 'XOF'),
-        (r'(\d+[.,]\d{1,3})', 1, 'XOF'),
-    ]
-
-    montant = 0.0
-    devise_raw = "XOF"
-    for pat, grp, forced_devise in patterns:
-        m = _re.search(pat, t)
-        if m:
-            try:
-                raw_num = m.group(grp).replace(' ', '').replace('\xa0', '').replace(',', '.')
-                val = float(raw_num)
-                if val > 0:
-                    montant = val
-                    devise_raw = forced_devise if forced_devise else m.group(grp + 1).strip()
-                    break
-            except (ValueError, IndexError):
-                continue
-
-    # ── Détecter la référence / Txid (multilingue) ─────────────────────
-    ref_patterns = [
-        # Hash crypto Ethereum-style (0x...) — Txid Binance, BSC, ETH
-        r'(?:TXID|TX\s*ID|HASH)[:\s]*([0-9A-F]{10,})',
-        r'\b(0[Xx][0-9A-Fa-f]{20,})\b',
-        # Référence alphanumérique standard
-        r'(?:R[ÉE]F[.:\s]+|REFERENCE[:\s]+|TRANSACTION\s*(?:ID)?[:\s]+|'
-        r'ORDER\s*ID[:\s]+|N[°O][:\s]*|FACT[:\s]*)([A-Z0-9\-]{6,40})',
-        # Motifs courants russe (Binance)
-        r'(?:TXID|ИДЕНТИФИКАТОР)[:\s]*([0-9A-F]{10,})',
-        # ID numérique long
-        r'\b([0-9]{10,20})\b',
-    ]
-    reference = ""
-    for rp in ref_patterns:
-        rm = _re.search(rp, t)
-        if rm:
-            reference = rm.group(1).strip()
-            break
-
-    return {"montant": montant, "devise_raw": devise_raw, "app": app_name, "reference": reference}
-
-
-async def analyze_payment_screenshot(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
-    """
-    Analyse une capture d'écran de paiement via OCR.space + parsing regex.
-    Compatible: Binance, Trust Wallet, PayPal, Revolut, Wise, Wave, Orange Money, MTN, etc.
-    Gère: BNB, ETH, BTC, TRX, USDT, USDC + USD, EUR, GBP, CAD, CHF, XOF/FCFA, GNF.
-    Multilingue: français, anglais, russe, arabe, etc. (OCR.space auto-detect).
-    """
-    import hashlib as _hashlib
-
-    # ── Étape 1: extraction OCR ────────────────────────────────────────
-    try:
-        raw_text = await _ocr_extract_text(image_bytes)
-    except Exception as e:
-        logger.error(f"OCR.space erreur: {e}")
-        return {"success": False, "details": "Service OCR indisponible. Réessayez dans quelques secondes."}
-
-    if not raw_text.strip():
-        return {"success": False, "details": "Aucun texte détecté sur la capture. L'image est peut-être floue ou mal cadrée."}
-
-    logger.info(f"OCR extrait: {raw_text[:300]}")
-
-    # ── Étape 2: parsing du texte ──────────────────────────────────────
-    parsed = _parse_payment_text(raw_text)
-    montant = parsed["montant"]
-    devise_raw = parsed["devise_raw"]
-    app_name = parsed["app"]
-    reference = parsed["reference"]
-
-    if montant <= 0:
-        return {
-            "success": False,
-            "details": f"Montant introuvable sur la capture.\n_Texte lu:_ `{raw_text[:150].strip()}`"
-        }
-
-    # ── Étape 3: conversion en FCFA ────────────────────────────────────
-    _CRYPTO_SYMBOLS = set(CRYPTO_FALLBACK_FCFA.keys()) | {"USDT", "USDC", "BUSD", "DAI"}
-
-    if devise_raw in _CRYPTO_SYMBOLS:
-        # Crypto → récupérer le prix live depuis CoinGecko
-        rate = await _get_crypto_rate_fcfa(devise_raw)
-        devise_label = devise_raw
-        amount_fcfa = int(montant * rate)
-        crypto_price_str = f"1 {devise_raw} ≈ {rate:,.0f} FCFA"
-        amount_str = f"{montant:.6g} {devise_label} → {amount_fcfa:,} FCFA\n💱 _{crypto_price_str}_"
-    elif devise_raw in CURRENCY_TABLE:
-        devise_label, rate = CURRENCY_TABLE[devise_raw]
-        amount_fcfa = int(montant * rate)
-        if devise_raw in ("XOF", "FCFA", "CFA", "XAF"):
-            devise_label = "FCFA"
-            amount_str = f"{amount_fcfa:,} FCFA"
-        else:
-            amount_str = f"{montant:.2f} {devise_label} → {amount_fcfa:,} FCFA"
-    else:
-        devise_label = devise_raw
-        amount_fcfa = int(montant)
-        amount_str = f"{amount_fcfa:,} FCFA"
-        logger.warning(f"Devise inconnue '{devise_raw}' → traitée comme FCFA")
-
-    days = amount_fcfa / PRICE_PER_DAY_FCFA
-    hours = int(days * 24)
-
-    # ── Étape 4: hash anti-doublon ─────────────────────────────────────
-    hash_input = f"{montant:.2f}|{devise_raw}|{reference}|{app_name}".lower()
-    payment_hash = _hashlib.sha256(hash_input.encode()).hexdigest()[:24]
-
-    return {
-        "success": True,
-        "montant_brut": montant,
-        "devise": devise_label,
-        "devise_raw": devise_raw,
-        "amount_fcfa": amount_fcfa,
-        "amount_str": amount_str,
-        "days": days,
-        "hours": hours,
-        "app": app_name,
-        "reference": reference,
-        "payment_hash": payment_hash,
-        "description": f"Paiement de {amount_str} via {app_name}",
-        "raw_text": raw_text[:400]
-    }
-
-
-def _build_payer_channel_keyboard(user_id: int, channels: dict) -> InlineKeyboardMarkup:
-    """Construit le clavier de sélection de canal pour le paiement."""
-    keyboard = []
-    for cid, ch in channels.items():
-        keyboard.append([InlineKeyboardButton(
-            f"📢 {ch.get('name', cid)}",
-            callback_data=f"pch_{user_id}_{cid}"
-        )])
-    keyboard.append([InlineKeyboardButton("❌ Annuler", callback_data=f"paycancel_{user_id}")])
-    return InlineKeyboardMarkup(keyboard)
-
-
 async def payer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /payer — étape 1: choisir le canal (ou direct si 1 seul), puis envoyer la capture"""
+    """Commande /payer — redirige vers le menu de paiement"""
     user = update.effective_user
     if not user:
         return
-
-    data = load_data()
-    channels = data.get("channels", {})
-    if not channels:
+    db_user = await db_get_user_by_telegram_id(user.id)
+    if not db_user:
         await update.message.reply_text(
-            "ℹ️ Aucun canal disponible pour le moment.\nContactez un administrateur."
+            "❌ Vous devez d'abord créer un compte.\n\nTapez /start pour vous inscrire.",
+            parse_mode="Markdown",
         )
         return
-
-    if len(channels) == 1:
-        cid = list(channels.keys())[0]
-        ch_name = channels[cid].get("name", cid)
-        payment_state[user.id] = {"step": "screenshot", "channel_id": cid, "channel_name": ch_name}
-        await update.message.reply_text(
-            f"💳 **Paiement**\n\n"
-            f"📢 Canal: **{ch_name}**\n\n"
-            f"📸 Envoyez la **capture d'écran** de votre paiement dans ce chat.\n\n"
-            f"Le bot vérifiera automatiquement le montant et activera votre accès immédiatement.\n\n"
-            f"💵 Taux: **{PRICE_PER_DAY_FCFA} FCFA = 1 jour** | **50 USD = 1 mois**\n\n"
-            f"_Tapez /annuler pour annuler._",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(
-            f"💳 **Paiement — Étape 1/2**\n\n"
-            f"Choisissez le **canal** auquel vous souhaitez accéder:",
-            reply_markup=_build_payer_channel_keyboard(user.id, channels),
-            parse_mode="Markdown"
-        )
+    email = db_user.get("email") or "votre email"
+    pay_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "🌐 Accéder au site de paiement",
+            url="https://paiement-s-curis.onrender.com",
+        )],
+        [InlineKeyboardButton(
+            "✅ J'ai payé — Vérifier mon accès",
+            callback_data="check_payment",
+        )],
+        [InlineKeyboardButton("🏠 Menu principal", callback_data="back_main")],
+    ])
+    await update.message.reply_text(
+        "💳 **Paiement d'abonnement**\n\n"
+        "1️⃣ Cliquez sur **\"Accéder au site de paiement\"**\n"
+        f"2️⃣ Connectez-vous avec votre email: `{email}`\n"
+        "3️⃣ Effectuez votre paiement\n"
+        "4️⃣ Cliquez **\"J'ai payé\"** pour activer l'accès\n\n"
+        "_Votre accès sera activé automatiquement après vérification._",
+        reply_markup=pay_keyboard,
+        parse_mode="Markdown",
+    )
 
 
 async def annuler_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /annuler — annule le paiement en cours"""
+    """Commande /annuler"""
     user = update.effective_user
     if not user:
         return
-    if user.id in payment_state:
-        payment_state.pop(user.id)
-        await update.message.reply_text("❌ Paiement annulé.")
-    else:
-        await update.message.reply_text("ℹ️ Aucun paiement en cours à annuler.")
-
-
-async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Traite la capture d'écran de paiement envoyée par l'utilisateur"""
-    user = update.effective_user
-    if not user:
-        return
-
-    state = payment_state.get(user.id, {})
-    if state.get("step") != "screenshot":
-        return  # Pas en mode paiement — ignorer
-
-    cid = state.get("channel_id")
-    ch_name = state.get("channel_name", "Canal")
-
-    await context.bot.send_chat_action(update.effective_chat.id, "typing")
+    reg_state.pop(user.id, None)
+    login_state.pop(user.id, None)
     await update.message.reply_text(
-        f"🔍 Analyse du paiement pour **{ch_name}** en cours...",
-        parse_mode="Markdown"
-    )
-
-    # Télécharger la photo
-    photo = update.message.photo[-1]
-    photo_file = await context.bot.get_file(photo.file_id)
-    image_bytes = await photo_file.download_as_bytearray()
-
-    # Analyser avec Gemini Vision
-    try:
-        result = await analyze_payment_screenshot(bytes(image_bytes))
-    except Exception as e:
-        error_str = str(e)
-        payment_state.pop(user.id, None)
-        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-            await update.message.reply_text(
-                "⚠️ **Service temporairement indisponible**\n\n"
-                "Le service d'analyse est momentanément saturé. "
-                "Veuillez réessayer dans quelques minutes.\n\n"
-                "Si le problème persiste, contactez l'administrateur.",
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text(
-                "❌ **Erreur lors de l'analyse**\n\n"
-                "Une erreur inattendue s'est produite. Veuillez réessayer ou contacter l'administrateur.",
-                parse_mode="Markdown"
-            )
-        logger.error(f"Erreur handle_payment_photo pour user {user.id}: {e}")
-        return
-
-    if not result["success"]:
-        await update.message.reply_text(
-            f"❌ **Impossible de traiter la capture**\n\n"
-            f"{result.get('details', 'Montant non détecté.')}\n\n"
-            f"Assurez-vous que la capture montre clairement le montant payé et réessayez.",
-            parse_mode="Markdown"
-        )
-        payment_state.pop(user.id, None)
-        return
-
-    amount_fcfa = result["amount_fcfa"]
-    hours = result["hours"]
-    days_text = format_duration_label(hours * 3600)
-    payment_hash = result.get("payment_hash", "")
-    reference = result.get("reference", "")
-
-    # ── Vérification anti-doublon ──────────────────────────────────────
-    data = load_data()
-    used_payments = data.setdefault("used_payments", {})
-    used_references = data.setdefault("used_references", {})
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-
-    # Chercher le doublon: par hash global OU par référence/txid seule
-    prev = None
-    dup_reason = ""
-    if payment_hash and payment_hash in used_payments:
-        prev = used_payments[payment_hash]
-        dup_reason = "hash"
-    elif reference and reference in used_references:
-        prev = used_references[reference]
-        dup_reason = f"référence `{reference}`"
-
-    if prev:
-        await update.message.reply_text(
-            f"🚫 **Reçu déjà utilisé !**\n\n"
-            f"Ce reçu de paiement a déjà été enregistré le **{prev.get('date', '?')}**.\n\n"
-            f"Si vous pensez qu'il y a une erreur, contactez l'administrateur via /start",
-            parse_mode="Markdown"
-        )
-        payment_state.pop(user.id, None)
-        # Notifier l'admin
-        for admin_id in ADMINS:
-            try:
-                await context.bot.send_photo(
-                    admin_id,
-                    photo=photo.file_id,
-                    caption=(
-                        f"⚠️ **Tentative de doublon détectée !**\n\n"
-                        f"👤 Utilisateur: **{full_name}** (@{user.username or 'N/A'})\n"
-                        f"🆔 ID: `{user.id}`\n"
-                        f"💰 Montant: {result['amount_str']}\n"
-                        f"🔍 Détecté via: {dup_reason}\n"
-                        f"📅 Précédent: {prev.get('date', '?')} — user `{prev.get('user_id', '?')}`"
-                    ),
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-        return
-
-    # ── Montant insuffisant ────────────────────────────────────────────
-    if hours < 1:
-        await update.message.reply_text(
-            f"⚠️ **Montant insuffisant**\n\n"
-            f"💰 Montant détecté: {result['amount_str']}\n"
-            f"💵 Minimum requis: **{PRICE_PER_DAY_FCFA} FCFA** (1 jour)\n\n"
-            f"Contactez un administrateur si vous pensez qu'il y a une erreur.",
-            parse_mode="Markdown"
-        )
-        payment_state.pop(user.id, None)
-        return
-
-    # ── Vérifier que le canal existe toujours ─────────────────────────
-    if not cid or cid not in data.get("channels", {}):
-        await update.message.reply_text(
-            "❌ Canal introuvable. Recommencez avec /payer",
-            parse_mode="Markdown"
-        )
-        payment_state.pop(user.id, None)
-        return
-
-    ch = data["channels"][cid]
-    current_time = int(datetime.now().timestamp())
-    duration_seconds = hours * 3600
-    expires_at = current_time + duration_seconds
-
-    # Enregistrer le membre
-    ch.setdefault("members", {})[str(user.id)] = {
-        "expires_at": expires_at,
-        "granted_at": current_time,
-        "duration_seconds": duration_seconds
-    }
-    ch.setdefault("blocked", {}).pop(str(user.id), None)
-
-    # Enregistrer le hash anti-doublon + la référence séparément
-    payment_record = {
-        "user_id": user.id,
-        "date": datetime.now().strftime('%d/%m/%Y %H:%M'),
-        "channel": ch_name,
-        "amount_str": result["amount_str"],
-        "reference": reference
-    }
-    if payment_hash:
-        used_payments[payment_hash] = payment_record
-    # Indexer la référence/txid séparément pour détection rapide
-    if reference:
-        used_references[reference] = payment_record
-
-    save_data(data)
-
-    # Débloquer si banni
-    try:
-        await context.bot.unban_chat_member(int(cid), user.id, only_if_banned=True)
-    except Exception:
-        pass
-
-    payment_state.pop(user.id, None)
-
-    expire_str = datetime.fromtimestamp(expires_at).strftime('%d/%m/%Y à %H:%M')
-    ref_line = f"🔖 Référence: `{reference}`\n" if reference else ""
-
-    # Générer un lien d'invitation unique (1 seule utilisation)
-    invite_link = None
-    try:
-        invite_obj = await context.bot.create_chat_invite_link(int(cid), member_limit=1)
-        invite_link = invite_obj.invite_link
-        pending_invites[(cid, str(user.id))] = invite_link
-    except Exception as e:
-        logger.warning(f"Impossible de créer le lien d'invitation pour {cid}: {e}")
-
-    # Confirmer à l'utilisateur avec le lien
-    if invite_link:
-        await update.message.reply_text(
-            f"🎉 **Paiement validé ! Accès activé.**\n\n"
-            f"📢 Canal: **{ch_name}**\n"
-            f"💰 Montant: **{result['amount_str']}**\n"
-            f"⏱ Durée: **{days_text}**\n"
-            f"📅 Expire le: {expire_str}\n"
-            f"{ref_line}\n"
-            f"👇 **Cliquez sur ce lien pour rejoindre le canal:**\n"
-            f"{invite_link}\n\n"
-            f"⚠️ Ce lien est à usage unique — ne le partagez pas.",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(
-            f"🎉 **Paiement validé ! Accès activé.**\n\n"
-            f"📢 Canal: **{ch_name}**\n"
-            f"💰 Montant: **{result['amount_str']}**\n"
-            f"⏱ Durée: **{days_text}**\n"
-            f"📅 Expire le: {expire_str}\n"
-            f"{ref_line}\n"
-            f"✅ Vous pouvez rejoindre le canal.\n"
-            f"_(Lien non disponible — contactez l'admin si nécessaire)_",
-            parse_mode="Markdown"
-        )
-
-    # Notifier les admins
-    await notify_admins_payment(
-        context, user, cid, ch_name, result["amount_str"], hours,
-        photo.file_id, reference, result.get("raw_text", "")
+        "✅ Opération annulée. Tapez /start pour recommencer.",
+        reply_markup=_auth_keyboard(),
     )
 
 
-async def notify_admins_payment(context, user, cid: str, ch_name: str,
-                                 amount_str: str, hours: int, photo_file_id: str,
-                                 reference: str = "", raw_text: str = ""):
-    """Notifie les admins d'un nouveau paiement validé"""
-    dur_label = format_duration_label(hours * 3600)
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    username = f"@{user.username}" if user.username else "N/A"
-    ref_line = f"🔖 Référence: `{reference}`\n" if reference else ""
-    ocr_preview = f"\n📄 _OCR: {raw_text[:120].strip()}_" if raw_text else ""
-
-    caption = (
-        f"💳 **Nouveau paiement reçu!**\n\n"
-        f"👤 Utilisateur: **{full_name}** ({username})\n"
-        f"🆔 ID: `{user.id}`\n"
-        f"📢 Canal: **{ch_name}**\n"
-        f"💰 Montant: **{amount_str}**\n"
-        f"{ref_line}"
-        f"⏱ Accès accordé: **{dur_label}**\n"
-        f"✅ Accès activé automatiquement."
-        f"{ocr_preview}"
-    )
-
-    for admin_id in ADMINS:
-        try:
-            await context.bot.send_photo(
-                admin_id,
-                photo=photo_file_id,
-                caption=caption,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            try:
-                await context.bot.send_message(admin_id, caption, parse_mode="Markdown")
-            except Exception:
-                pass
-
-
-# ═══════════════════════════════════════════════════════════════
 # COMMANDES TELETHON (Compte utilisateur personnel)
 # ═══════════════════════════════════════════════════════════════
 
@@ -3446,7 +3234,7 @@ async def check_expirations_task(application: Application):
                             f"⏰ **Accès expiré — {ch['name']}**\n\n"
                             f"Votre accès à ce canal a expiré et vous avez été retiré.\n\n"
                             f"🚫 Toute tentative de retour sera automatiquement bloquée.\n\n"
-                            f"💳 Pour renouveler votre abonnement, appuyez sur /start dans ce bot.",
+                            f"💳 Pour renouveler, tapez /start et cliquez sur 💳 Payer mon abonnement.",
                             parse_mode="Markdown"
                         )
                     except Exception:
@@ -3543,18 +3331,13 @@ async def main():
     application.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
-    # Captures d'écran de paiement — photos en chat privé
-    application.add_handler(MessageHandler(
-        filters.PHOTO & filters.ChatType.PRIVATE,
-        handle_payment_photo
-    ))
-
-    # Messages utilisateurs (réponse IA, saisies admin) — uniquement chats privés
+    # Messages utilisateurs (réponse IA, saisies admin, inscription) — uniquement chats privés
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_user_message
     ))
 
+    await init_db_pool()
     await start_web_server()
     await application.initialize()
     await application.start()

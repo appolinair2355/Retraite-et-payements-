@@ -7,3 +7,5 @@ aiolimiter
 google-genai
 telethon
 openai
+asyncpg
+bcrypt
