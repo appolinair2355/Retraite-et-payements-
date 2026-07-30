@@ -22,7 +22,7 @@ const PORT = process.env.PORT || 10000;
 
 // ─── URL DU SITE (pour les boutons Telegram / emails) ─────────────────────
 const SITE_URL = process.env.SITE_URL || 'https://solarium-1-rj14.onrender.com';
-const PAYMENT_URL = process.env.PAYMENT_URL || 'https://paiement-s-curis.onrender.com';
+const PAYMENT_URL = process.env.PAYMENT_URL || 'https://paiement-s-curis-50u2.onrender.com';
 
 // ─── BASE DE DONNÉES ──────────────────────────────────────────────────────
 // ⚠️ Toujours fournir DATABASE_URL (ou DB_URL) en variable d'environnement sur Render.
